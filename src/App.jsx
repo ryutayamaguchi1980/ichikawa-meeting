@@ -6,24 +6,79 @@ import { db } from './db';
 
 // ========== 設定データ ==========
 
-// 振り返り（個人発表）の項目 ─ 週次振り返りミーティングの発表内容と同じ流れ
-const REVIEW_FIELDS = [
-  { key: 'did', label: '今月やったこと（具体的な行動）', placeholder: '例：ターゲット居宅への定期訪問、新規デモ3件' },
-  { key: 'good', label: '良かったこと（うまくいったこと）', placeholder: '例：○○居宅から新規2件紹介いただけた' },
-  { key: 'bad', label: 'うまくいかなかったこと', placeholder: '例：訪問数が目標に届かなかった' },
-  { key: 'insight', label: '気づいたこと・学び', placeholder: '例：午前中の訪問の方がケアマネと話せる' },
+// 今月の事実（何をしたか）
+const DID_FIELD = {
+  key: 'did',
+  label: '今月やったこと（事実）',
+  placeholder: '例：ターゲット居宅3件へ毎週訪問。新規デモ5件。ケアマネ勉強会に1回参加。',
+};
+
+// 「何が起きたか」→「なぜそうなったか」をセットで振り返る
+const REVIEW_PAIRS = [
+  {
+    key: 'good',
+    title: 'うまくいったこと',
+    tone: 'good',
+    what: {
+      key: 'goodWhat',
+      label: '何がうまくいった？',
+      placeholder: '例：ケアプランセンターAから新規2件のご紹介をいただけた',
+    },
+    why: {
+      key: 'goodWhy',
+      label: 'なぜうまくいった？（自分は何をした？）',
+      placeholder: '例：毎週同じ曜日の午前に顔を出し続けたことで、困ったときに真っ先に思い出してもらえたから',
+    },
+  },
+  {
+    key: 'bad',
+    title: 'うまくいかなかったこと',
+    tone: 'bad',
+    what: {
+      key: 'badWhat',
+      label: '何がうまくいかなかった？',
+      placeholder: '例：目標8件に対して訪問が6件にとどまった',
+    },
+    why: {
+      key: 'badWhy',
+      label: 'なぜそうなった？（自分に変えられた点は？）',
+      placeholder: '例：訪問を午後に入れていたため、急な納品対応が入るたびに後回しになった',
+    },
+  },
 ];
 
+// 振り返りから導く「次も使える自分なりの法則」
+const LEARNING_FIELD = {
+  key: 'learning',
+  label: '今月の学び ─ 次も使える自分なりの法則',
+  placeholder: '例：ケアマネとの関係づくりは「回数 × 同じ曜日」が効く。訪問は午前に固定した方が崩れない。',
+};
+
 const SHARE_FIELDS = [
-  { key: 'trouble', label: '困りごと相談', placeholder: '例：△△の対応で悩んでいる' },
-  { key: 'success', label: '成功事例共有', placeholder: '例：□□の提案が喜ばれた' },
-  { key: 'improve', label: '改善案・提案', placeholder: '例：チラシを新しくしたい' },
+  { key: 'trouble', label: '困りごと・相談したいこと', placeholder: '例：△△さんへの提案が通らず悩んでいる' },
+  { key: 'success', label: 'みんなに使ってほしい成功事例', placeholder: '例：□□の提案時にカタログではなく実物を持参したら即決だった' },
+  { key: 'improve', label: '市川店をこう変えたい（改善案）', placeholder: '例：デモ機の予約表を作りたい' },
 ];
 
 const NEXT_FIELDS = [
-  { key: 'focus', label: '来月の重点活動', placeholder: '例：ターゲット居宅の訪問頻度を週1に' },
-  { key: 'challenge', label: 'チャレンジすること', placeholder: '例：新規居宅2件の開拓' },
-  { key: 'help', label: '協力してほしいこと', placeholder: '例：同行訪問をお願いしたい' },
+  {
+    key: 'focus',
+    label: '来月やること（必ずやる）',
+    hint: 'いつ・どこで・何をするかまで決める',
+    placeholder: '例：ターゲット居宅3件へ、毎週火曜の午前に訪問する',
+  },
+  {
+    key: 'challenge',
+    label: '来月のチャレンジ（初めて試すこと）',
+    hint: 'うまくいかなくてもOK。結果より「やってみて何が分かったか」',
+    placeholder: '例：初回訪問でその場で簡単な図面を書いて渡してみる',
+  },
+  {
+    key: 'help',
+    label: '気がかりな案件・止まっていること',
+    hint: '見積りが出せていない／工事日が決まらない／溜まっている／なんとなく不安。小さいうちに出すのが一番ラク',
+    placeholder: '例：△△様の見積りが3週間止まっている／□□様の工事日が来月以降しか取れそうにない／○○様、ご家族の意見が割れていて心配',
+  },
 ];
 
 // 市川店の営業メンバー（発表順）
@@ -35,15 +90,76 @@ const RESULT_ITEMS = [
   { key: 'goods', label: '用品', unit: '件' },
   { key: 'renovation', label: '住宅改修', unit: '件' },
   { key: 'handrail', label: '手すり', unit: '本' },
-  { key: 'survey', label: '現調', unit: '件' },
+  { key: 'surveyNormal', label: '現調（通常）', unit: '件' },
+  { key: 'surveySales', label: '現調（営業）', unit: '件' },
 ];
+
+// 補聴器は「測定 → 販売」の流れで追うため、実績表とは別枠で扱う
+const HEARING_ITEMS = [
+  { key: 'hearingMeasure', label: '測定数', unit: '件' },
+  { key: 'hearingSale', label: '販売数', unit: '台' },
+];
+const ALL_RESULT_KEYS = [...RESULT_ITEMS, ...HEARING_ITEMS];
+
+// アクション数（日々の営業活動のカウント）
+const ACTION_DAYS = ['月', '火', '水', '木', '金', '土'];
+const ACTION_WEEKS = 5;
+const ACTION_DAY_GOAL = 10;   // 1日あたりの目標
+const ACTION_WEEK_GOAL = 50;  // 1週あたりの目標
+
+// ケアマネ・ご家族から聞いた声
+const VOICE_FIELD = {
+  key: 'voices',
+  label: 'ケアマネ・ご家族からの情報・ご意見',
+  hint: '現場で聞いた生の声。市川店の次の一手のヒントになります',
+  placeholder: '例：○○ケアマネ「退院前カンファに同席してほしい」／△△様のご家族「夜間のトイレが不安」',
+};
 
 const TARGET_COUNT = 3;
 
 function createEmptyResults() {
   const results = {};
-  RESULT_ITEMS.forEach(item => { results[item.key] = { goal: '', actual: '' }; });
+  ALL_RESULT_KEYS.forEach(item => { results[item.key] = { goal: '', actual: '' }; });
   return results;
+}
+
+// 旧形式（現調が1種類だった頃）の記録を読み替える
+function migrateResults(results) {
+  const merged = { ...createEmptyResults(), ...(results || {}) };
+  if (results?.survey && !results?.surveyNormal) {
+    merged.surveyNormal = results.survey;
+  }
+  return merged;
+}
+
+function createEmptyActions() {
+  return Array.from({ length: ACTION_WEEKS }, () => Array(ACTION_DAYS.length).fill(''));
+}
+
+// 空欄は0として扱う。1つも入力が無い場合は null を返して「─」表示にする
+function sumCells(cells) {
+  const nums = cells.filter(v => v !== '' && v != null).map(Number).filter(Number.isFinite);
+  return nums.length ? nums.reduce((a, b) => a + b, 0) : null;
+}
+
+function actionWeekTotal(weeks, wi) {
+  return sumCells(weeks[wi] || []);
+}
+
+function actionDayTotal(weeks, di) {
+  return sumCells(weeks.map(w => w[di]));
+}
+
+function actionGrandTotal(weeks) {
+  return sumCells(weeks.flat());
+}
+
+// 補聴器の成約率（測定数のうち何件が販売になったか）
+function hearingConversion(results) {
+  const m = Number(results?.hearingMeasure?.actual);
+  const s = Number(results?.hearingSale?.actual);
+  if (!m || !Number.isFinite(m) || !Number.isFinite(s)) return null;
+  return Math.round((s / m) * 100);
 }
 
 function createEmptyMeeting() {
@@ -63,10 +179,36 @@ function createEmptyMeeting() {
       { item: '', goal: '', result: '' },
       { item: '', goal: '', result: '' },
     ],
-    review: { did: '', good: '', bad: '', insight: '' },
+    actions: createEmptyActions(),
+    voices: '',
+    review: { did: '', goodWhat: '', goodWhy: '', badWhat: '', badWhy: '', learning: '' },
     share: { trouble: '', success: '', improve: '' },
     next: { focus: '', challenge: '', help: '' },
-    meetingNotes: '',
+  };
+}
+
+// 保存済みのアクション表を、行数・列数が変わっても壊れないように整える
+function normalizeActions(actions) {
+  const base = createEmptyActions();
+  if (!Array.isArray(actions)) return base;
+  return base.map((row, wi) =>
+    row.map((_, di) => {
+      const v = actions[wi]?.[di];
+      return v == null ? '' : String(v);
+    })
+  );
+}
+
+// 旧形式（good / bad / insight）で保存された記録を新形式へ読み替える
+function migrateReview(review) {
+  if (!review) return createEmptyMeeting().review;
+  const { good, bad, insight, ...rest } = review;
+  return {
+    did: '', goodWhat: '', goodWhy: '', badWhat: '', badWhy: '', learning: '',
+    ...rest,
+    ...(good && !rest.goodWhat ? { goodWhat: good } : {}),
+    ...(bad && !rest.badWhat ? { badWhat: bad } : {}),
+    ...(insight && !rest.learning ? { learning: insight } : {}),
   };
 }
 
@@ -127,6 +269,34 @@ function usePrevMonthRecord(staffName, month) {
   return prev;
 }
 
+// 補聴器の年間販売累計。保存済みの他の月を合算し、編集中の当月分は画面の値を足す
+function useYearHearingSales(staffName, month, currentMonthActual) {
+  const [otherMonths, setOtherMonths] = useState(0);
+  useEffect(() => {
+    if (!staffName || !month) { setOtherMonths(0); return; }
+    const year = month.split('-')[0];
+    db.meetings
+      .where('staffName').equals(staffName)
+      .toArray()
+      .then(recs => {
+        // 同じ月に複数の記録があれば、最後に更新されたものだけを採用する
+        const latestByMonth = new Map();
+        recs
+          .filter(r => r.month && r.month.startsWith(`${year}-`) && r.month !== month)
+          .forEach(r => {
+            const cur = latestByMonth.get(r.month);
+            if (!cur || (r.updatedAt || 0) > (cur.updatedAt || 0)) latestByMonth.set(r.month, r);
+          });
+        const sum = [...latestByMonth.values()]
+          .reduce((s, r) => s + (Number(r.results?.hearingSale?.actual) || 0), 0);
+        setOtherMonths(sum);
+      })
+      .catch(() => setOtherMonths(0));
+  }, [staffName, month]);
+
+  return otherMonths + (Number(currentMonthActual) || 0);
+}
+
 // ========== メイン ==========
 
 export default function App() {
@@ -135,13 +305,16 @@ export default function App() {
   const [currentId, setCurrentId] = useState(null);
 
   const handleLoad = (record) => {
-    const { id, createdAt, updatedAt, ...data } = record;
+    const { id, createdAt, updatedAt, meetingNotes, ...data } = record;
     const base = createEmptyMeeting();
     setMeeting({
       ...base,
       ...data,
       staffName: data.staffName || base.staffName,
-      results: { ...createEmptyResults(), ...(data.results || {}) },
+      results: migrateResults(data.results),
+      actions: normalizeActions(data.actions),
+      voices: data.voices || '',
+      review: migrateReview(data.review),
     });
     setCurrentId(id);
     setView('editor');
@@ -157,7 +330,7 @@ export default function App() {
   const handleCopyNextMonth = (record) => {
     const base = createEmptyMeeting();
     const carriedResults = createEmptyResults();
-    RESULT_ITEMS.forEach(item => {
+    ALL_RESULT_KEYS.forEach(item => {
       carriedResults[item.key] = { goal: record.results?.[item.key]?.goal || '', actual: '' };
     });
     setMeeting({
@@ -205,6 +378,12 @@ export default function App() {
 function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange, onPreview, onList }) {
   const [saveStatus, setSaveStatus] = useState('saved');
   const prevRecord = usePrevMonthRecord(meeting.staffName, meeting.month);
+  const conversion = hearingConversion(meeting.results);
+  const yearHearingSales = useYearHearingSales(
+    meeting.staffName,
+    meeting.month,
+    meeting.results?.hearingSale?.actual
+  );
 
   const update = (field, value) => setMeeting(prev => ({ ...prev, [field]: value }));
   const updateNested = (group, key, value) =>
@@ -218,6 +397,13 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
     setMeeting(prev => ({
       ...prev,
       results: { ...prev.results, [key]: { ...prev.results[key], [field]: value } },
+    }));
+  const updateAction = (weekIndex, dayIndex, value) =>
+    setMeeting(prev => ({
+      ...prev,
+      actions: prev.actions.map((week, wi) =>
+        wi === weekIndex ? week.map((cell, di) => (di === dayIndex ? value : cell)) : week
+      ),
     }));
   const updateGoal = (idx, key, value) =>
     setMeeting(prev => ({
@@ -404,7 +590,7 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
         </SectionCard>
 
         {/* 2. 実績 */}
-        <SectionCard number="2" title="実績" subtitle="レンタル・用品・住宅改修・手すり・現調">
+        <SectionCard number="2" title="実績" subtitle="レンタル・用品・住宅改修・手すり・現調（通常／営業）・補聴器">
           <div className="space-y-2">
             <div className="grid grid-cols-[1fr_70px_70px_70px_60px] gap-2 text-xs font-semibold text-gray-600 px-1">
               <span>項目</span>
@@ -451,11 +637,100 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
             <p className="text-xs text-gray-400 pt-1">
               ※先月実績は、同じ氏名で保存された前月のシートから自動表示されます
             </p>
+
+            {/* 補聴器：測定 → 販売 の流れで追う */}
+            <div className="rounded-lg border-2 border-indigo-300 bg-indigo-50 p-3 mt-3 space-y-2">
+              <p className="font-bold text-sm text-indigo-900">補聴器</p>
+
+              {HEARING_ITEMS.map(item => {
+                const r = meeting.results[item.key] || { goal: '', actual: '' };
+                const rate = achievementRate(r.goal, r.actual);
+                const prevActual = prevRecord?.results?.[item.key]?.actual;
+                return (
+                  <div key={item.key} className="grid grid-cols-[1fr_70px_70px_70px_60px] gap-2 items-center">
+                    <span className="font-bold text-sm text-gray-800 pl-1">
+                      {item.label}
+                      <span className="text-xs text-gray-400 font-normal ml-1">({item.unit})</span>
+                    </span>
+                    <span className="text-center text-sm text-gray-500 bg-white border border-gray-200 rounded-lg py-2">
+                      {prevActual !== undefined && prevActual !== '' ? prevActual : '─'}
+                    </span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      value={r.goal}
+                      onChange={e => updateResult(item.key, 'goal', e.target.value)}
+                      placeholder="0"
+                      className="border rounded-lg px-2 py-2 text-base text-center bg-white"
+                    />
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      value={r.actual}
+                      onChange={e => updateResult(item.key, 'actual', e.target.value)}
+                      placeholder="0"
+                      className="border rounded-lg px-2 py-2 text-base text-center bg-white"
+                    />
+                    <span className={`text-center text-sm font-bold ${rateColor(rate)}`}>
+                      {rate === null ? '─' : `${rate}%`}
+                    </span>
+                  </div>
+                );
+              })}
+
+              <div className="flex items-center justify-between border-t border-indigo-200 pt-2">
+                <span className="text-sm font-bold text-indigo-900">
+                  成約率
+                  <span className="text-xs font-normal text-indigo-700 ml-1">測定のうち販売になった割合</span>
+                </span>
+                <span className="text-lg font-bold text-indigo-900">
+                  {conversion === null ? '─' : `${conversion}%`}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between border-t-2 border-indigo-400 pt-2">
+                <span className="text-sm font-bold text-indigo-900">
+                  {meeting.month ? meeting.month.split('-')[0] : ''}年の販売累計
+                </span>
+                <span className="text-2xl font-bold text-indigo-900">
+                  {yearHearingSales}<span className="text-sm ml-1">台</span>
+                </span>
+              </div>
+
+              <p className="text-xs text-indigo-700">
+                ※累計は、同じ担当営業で保存された今年のシートを自動集計しています
+              </p>
+            </div>
           </div>
         </SectionCard>
 
+        {/* 3. アクション数 */}
+        <SectionCard
+          number="3"
+          title="アクション数"
+          subtitle={`日々の営業活動の回数　1日${ACTION_DAY_GOAL}アクション／週${ACTION_WEEK_GOAL}アクションが目標`}
+          accent="border-purple-400"
+        >
+          <ActionGrid
+            weeks={meeting.actions}
+            onChange={(wi, di, v) => updateAction(wi, di, v)}
+          />
+        </SectionCard>
+
+        {/* 4. ケアマネ・ご家族の声 */}
+        <SectionCard number="4" title="ケアマネ・ご家族からの声" subtitle="現場で聞いた情報・ご意見" accent="border-sky-400">
+          <TextField
+            label={VOICE_FIELD.label}
+            hint={VOICE_FIELD.hint}
+            placeholder={VOICE_FIELD.placeholder}
+            value={meeting.voices}
+            onChange={v => update('voices', v)}
+            rows={5}
+          />
+        </SectionCard>
+
         {/* 3. その他の目標と結果 */}
-        <SectionCard number="3" title="その他の目標と結果" subtitle="上記以外の目標があれば自由に追加">
+        <SectionCard number="5" title="その他の目標と結果" subtitle="上記以外の目標があれば自由に追加">
           <div className="space-y-2">
             <div className="grid grid-cols-[1fr_80px_80px_36px] gap-2 text-xs font-semibold text-gray-600 px-1">
               <span>項目</span>
@@ -506,15 +781,65 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
         </SectionCard>
 
         {/* 4. 今月の振り返り */}
-        <SectionCard number="4" title="今月の振り返り（個人発表）" subtitle="1人3分・本音の共有を大切に" accent="border-orange-400">
-          {REVIEW_FIELDS.map(f => (
-            <TextField key={f.key} label={f.label} placeholder={f.placeholder}
-              value={meeting.review[f.key]} onChange={v => updateNested('review', f.key, v)} rows={3} />
+        <SectionCard number="6" title="今月の振り返り" subtitle="事実を書いたら、必ず「なぜ？」まで掘り下げる" accent="border-orange-400">
+          <TextField
+            label={DID_FIELD.label}
+            placeholder={DID_FIELD.placeholder}
+            value={meeting.review.did}
+            onChange={v => updateNested('review', DID_FIELD.key, v)}
+            rows={3}
+          />
+
+          {REVIEW_PAIRS.map(pair => (
+            <div
+              key={pair.key}
+              className={`rounded-lg border-2 p-3 space-y-2 ${
+                pair.tone === 'good' ? 'border-green-300 bg-green-50' : 'border-red-300 bg-red-50'
+              }`}
+            >
+              <p className={`font-bold text-sm ${pair.tone === 'good' ? 'text-green-800' : 'text-red-800'}`}>
+                {pair.title}
+              </p>
+              <TextField
+                label={pair.what.label}
+                placeholder={pair.what.placeholder}
+                value={meeting.review[pair.what.key]}
+                onChange={v => updateNested('review', pair.what.key, v)}
+                rows={3}
+                bare
+              />
+              <div className="flex items-center gap-2 pl-1">
+                <span className="text-lg leading-none">↓</span>
+                <span className="text-xs font-bold text-gray-500">ここで止めずに、なぜかを考える</span>
+              </div>
+              <TextField
+                label={pair.why.label}
+                placeholder={pair.why.placeholder}
+                value={meeting.review[pair.why.key]}
+                onChange={v => updateNested('review', pair.why.key, v)}
+                rows={3}
+                bare
+              />
+            </div>
           ))}
+
+          <div className="rounded-lg border-2 border-amber-400 bg-amber-50 p-3">
+            <TextField
+              label={LEARNING_FIELD.label}
+              placeholder={LEARNING_FIELD.placeholder}
+              value={meeting.review.learning}
+              onChange={v => updateNested('review', LEARNING_FIELD.key, v)}
+              rows={3}
+              bare
+            />
+            <p className="text-xs text-amber-800 mt-1">
+              ※ここが一番大事です。今月の経験を、来月も再現できる「自分の言葉」に変えておきます。
+            </p>
+          </div>
         </SectionCard>
 
         {/* 5. 全体共有 */}
-        <SectionCard number="5" title="全体共有" subtitle="誰かを責めるのではなく、みんなで考える" accent="border-green-500">
+        <SectionCard number="7" title="全体共有" subtitle="誰かを責めるのではなく、市川店として前に進むために" accent="border-green-500">
           {SHARE_FIELDS.map(f => (
             <TextField key={f.key} label={f.label} placeholder={f.placeholder}
               value={meeting.share[f.key]} onChange={v => updateNested('share', f.key, v)} rows={3} />
@@ -522,22 +847,11 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
         </SectionCard>
 
         {/* 6. 来月の行動 */}
-        <SectionCard number="6" title="来月の行動" subtitle="やることを明確にして来月へつなげる" accent="border-blue-500">
+        <SectionCard number="8" title="来月の行動" subtitle="学びを、来月の具体的な動きに変える" accent="border-blue-500">
           {NEXT_FIELDS.map(f => (
-            <TextField key={f.key} label={f.label} placeholder={f.placeholder}
+            <TextField key={f.key} label={f.label} hint={f.hint} placeholder={f.placeholder}
               value={meeting.next[f.key]} onChange={v => updateNested('next', f.key, v)} rows={3} />
           ))}
-        </SectionCard>
-
-        {/* 7. 会議メモ */}
-        <SectionCard number="7" title="会議メモ（当日記入）" subtitle="部長・SVからのコメント、決定事項など">
-          <textarea
-            value={meeting.meetingNotes}
-            onChange={e => update('meetingNotes', e.target.value)}
-            placeholder="会議当日に記入します"
-            rows={4}
-            className="w-full border rounded-lg px-3 py-2 text-base"
-          />
         </SectionCard>
       </div>
 
@@ -572,16 +886,79 @@ function SectionCard({ number, title, subtitle, accent = 'border-gray-300', chil
   );
 }
 
-function TextField({ label, value, onChange, placeholder, rows = 2 }) {
+// 月〜土 × 5週のアクション数入力表。週合計・曜日合計・総合計を自動集計する
+function ActionGrid({ weeks, onChange }) {
+  const grand = actionGrandTotal(weeks);
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-center">
+        <thead>
+          <tr>
+            <th className="text-xs font-semibold text-gray-600 pb-1 w-10"></th>
+            {ACTION_DAYS.map(d => (
+              <th key={d} className="text-xs font-semibold text-gray-600 pb-1">{d}</th>
+            ))}
+            <th className="text-xs font-semibold text-gray-600 pb-1 w-14">週計</th>
+          </tr>
+        </thead>
+        <tbody>
+          {weeks.map((week, wi) => {
+            const total = actionWeekTotal(weeks, wi);
+            const reached = total !== null && total >= ACTION_WEEK_GOAL;
+            return (
+              <tr key={wi}>
+                <td className="text-xs font-bold text-gray-500 pr-1">{wi + 1}週</td>
+                {week.map((cell, di) => (
+                  <td key={di} className="p-0.5">
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      value={cell}
+                      onChange={e => onChange(wi, di, e.target.value)}
+                      className={`w-full border rounded px-0.5 py-2 text-base text-center ${
+                        cell !== '' && Number(cell) >= ACTION_DAY_GOAL
+                          ? 'bg-green-50 border-green-400 font-bold'
+                          : ''
+                      }`}
+                    />
+                  </td>
+                ))}
+                <td className={`text-sm font-bold ${total === null ? 'text-gray-400' : reached ? 'text-green-600' : 'text-red-600'}`}>
+                  {total ?? '─'}
+                </td>
+              </tr>
+            );
+          })}
+          <tr>
+            <td className="text-xs font-bold text-gray-500 pr-1 pt-1">曜日計</td>
+            {ACTION_DAYS.map((_, di) => {
+              const t = actionDayTotal(weeks, di);
+              return (
+                <td key={di} className="text-sm font-bold text-gray-700 pt-1">{t ?? '─'}</td>
+              );
+            })}
+            <td className="text-base font-bold text-gray-900 pt-1">{grand ?? '─'}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p className="text-xs text-gray-400 mt-2">
+        ※1日{ACTION_DAY_GOAL}アクション以上のマスは緑になります。週計は{ACTION_WEEK_GOAL}以上で緑、未満は赤。
+      </p>
+    </div>
+  );
+}
+
+function TextField({ label, value, onChange, placeholder, rows = 2, hint, bare }) {
   return (
     <div>
-      <label className="block text-xs font-semibold text-gray-600 mb-1">{label}</label>
+      <label className="block text-xs font-semibold text-gray-600 mb-0.5">{label}</label>
+      {hint && <p className="text-xs text-gray-400 mb-1">{hint}</p>}
       <textarea
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder={placeholder}
         rows={rows}
-        className="w-full border rounded-lg px-3 py-2 text-base"
+        className={`w-full border rounded-lg px-3 py-2 text-base ${bare ? 'bg-white' : ''}`}
       />
     </div>
   );
@@ -688,6 +1065,14 @@ function MeetingListScreen({ currentId, onLoad, onNew, onCopyNextMonth, onBack }
 function MeetingPreviewScreen({ meeting, onBack }) {
   const handlePrint = () => window.print();
   const prevRecord = usePrevMonthRecord(meeting.staffName, meeting.month);
+  // 先月の学びを持ち越して表示する（旧形式で保存された記録にも対応）
+  const prevLearning = prevRecord ? migrateReview(prevRecord.review).learning : '';
+  const conversion = hearingConversion(meeting.results);
+  const yearHearingSales = useYearHearingSales(
+    meeting.staffName,
+    meeting.month,
+    meeting.results?.hearingSale?.actual
+  );
 
   return (
     <div className="bg-gray-300 min-h-screen">
@@ -721,7 +1106,7 @@ function MeetingPreviewScreen({ meeting, onBack }) {
       {/* A3横シート */}
       <div
         className="print-sheet bg-white mx-auto my-4 shadow-xl"
-        style={{ width: '420mm', minHeight: '297mm', padding: '9mm 11mm', fontSize: '10pt', color: '#111' }}
+        style={{ width: '420mm', minHeight: '297mm', padding: '7mm 11mm', fontSize: '10pt', color: '#111' }}
       >
         {/* ヘッダー */}
         <div className="flex items-end justify-between border-b-2 border-gray-900 pb-1.5">
@@ -758,16 +1143,16 @@ function MeetingPreviewScreen({ meeting, onBack }) {
                   const rate = achievementRate(t.goalVisits, t.actualVisits);
                   return (
                     <tr key={i}>
-                      <td className="border border-gray-400 px-1 py-2 text-center font-bold">{i + 1}</td>
-                      <td className="border border-gray-400 px-1.5 py-2">
+                      <td className="border border-gray-400 px-1 py-1 text-center font-bold">{i + 1}</td>
+                      <td className="border border-gray-400 px-1.5 py-1">
                         <div>{t.name}</div>
                         {t.careManager && (
                           <div className="text-gray-600" style={{ fontSize: '8pt' }}>CM：{t.careManager}</div>
                         )}
                       </td>
-                      <td className="border border-gray-400 px-1 py-2 text-center">{t.goalVisits !== '' ? t.goalVisits : ''}</td>
-                      <td className="border border-gray-400 px-1 py-2 text-center">{t.actualVisits !== '' ? t.actualVisits : ''}</td>
-                      <td className={`border border-gray-400 px-1 py-2 text-center font-bold ${rateColor(rate)}`}>
+                      <td className="border border-gray-400 px-1 py-1 text-center">{t.goalVisits !== '' ? t.goalVisits : ''}</td>
+                      <td className="border border-gray-400 px-1 py-1 text-center">{t.actualVisits !== '' ? t.actualVisits : ''}</td>
+                      <td className={`border border-gray-400 px-1 py-1 text-center font-bold ${rateColor(rate)}`}>
                         {rate === null ? '' : `${rate}%`}
                       </td>
                     </tr>
@@ -780,11 +1165,11 @@ function MeetingPreviewScreen({ meeting, onBack }) {
             <table className="w-full border-collapse" style={{ fontSize: '9pt' }}>
               <thead>
                 <tr className="bg-gray-100">
-                  <th className="border border-gray-400 px-1.5 py-1 text-left">項目</th>
-                  <th className="border border-gray-400 px-1 py-1 w-16">先月実績</th>
-                  <th className="border border-gray-400 px-1 py-1 w-14">目標</th>
-                  <th className="border border-gray-400 px-1 py-1 w-14">実績</th>
-                  <th className="border border-gray-400 px-1 py-1 w-14">達成率</th>
+                  <th className="border border-gray-400 px-1.5 py-0.5 text-left">項目</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-16">先月実績</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-14">目標</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-14">実績</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-14">達成率</th>
                 </tr>
               </thead>
               <tbody>
@@ -794,15 +1179,15 @@ function MeetingPreviewScreen({ meeting, onBack }) {
                   const prevActual = prevRecord?.results?.[item.key]?.actual;
                   return (
                     <tr key={item.key}>
-                      <td className="border border-gray-400 px-1.5 py-1.5 font-bold">
+                      <td className="border border-gray-400 px-1.5 py-0.5 font-bold">
                         {item.label}<span className="font-normal text-gray-500">（{item.unit}）</span>
                       </td>
-                      <td className="border border-gray-400 px-1 py-1.5 text-center text-gray-600">
+                      <td className="border border-gray-400 px-1 py-0.5 text-center text-gray-600">
                         {prevActual !== undefined && prevActual !== '' ? prevActual : ''}
                       </td>
-                      <td className="border border-gray-400 px-1 py-1.5 text-center">{r.goal !== '' ? r.goal : ''}</td>
-                      <td className="border border-gray-400 px-1 py-1.5 text-center font-bold">{r.actual !== '' ? r.actual : ''}</td>
-                      <td className={`border border-gray-400 px-1 py-1.5 text-center font-bold ${rateColor(rate)}`}>
+                      <td className="border border-gray-400 px-1 py-0.5 text-center">{r.goal !== '' ? r.goal : ''}</td>
+                      <td className="border border-gray-400 px-1 py-0.5 text-center font-bold">{r.actual !== '' ? r.actual : ''}</td>
+                      <td className={`border border-gray-400 px-1 py-0.5 text-center font-bold ${rateColor(rate)}`}>
                         {rate === null ? '' : `${rate}%`}
                       </td>
                     </tr>
@@ -811,9 +1196,72 @@ function MeetingPreviewScreen({ meeting, onBack }) {
               </tbody>
             </table>
 
+            {/* 補聴器：測定 → 販売 → 年間累計 */}
+            <div className="border-2 border-indigo-500 rounded mt-1.5 overflow-hidden">
+              <p className="px-2 py-0.5 font-bold bg-indigo-100 text-indigo-900" style={{ fontSize: '9pt' }}>
+                補聴器
+              </p>
+              <table className="w-full border-collapse" style={{ fontSize: '9pt' }}>
+                <tbody>
+                  {HEARING_ITEMS.map(item => {
+                    const r = meeting.results[item.key] || { goal: '', actual: '' };
+                    const rate = achievementRate(r.goal, r.actual);
+                    const prevActual = prevRecord?.results?.[item.key]?.actual;
+                    return (
+                      <tr key={item.key}>
+                        <td className="border border-indigo-200 px-1.5 py-0.5 font-bold">
+                          {item.label}<span className="font-normal text-gray-500">（{item.unit}）</span>
+                        </td>
+                        <td className="border border-indigo-200 px-1 py-0.5 text-center text-gray-600 w-16">
+                          {prevActual !== undefined && prevActual !== '' ? prevActual : ''}
+                        </td>
+                        <td className="border border-indigo-200 px-1 py-0.5 text-center w-14">{r.goal !== '' ? r.goal : ''}</td>
+                        <td className="border border-indigo-200 px-1 py-0.5 text-center font-bold w-14">{r.actual !== '' ? r.actual : ''}</td>
+                        <td className={`border border-indigo-200 px-1 py-0.5 text-center font-bold w-14 ${rateColor(rate)}`}>
+                          {rate === null ? '' : `${rate}%`}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  <tr className="bg-indigo-50">
+                    <td className="border border-indigo-200 px-1.5 py-0.5 font-bold" colSpan={3}>
+                      成約率<span className="font-normal text-gray-600" style={{ fontSize: '7.5pt' }}>（測定のうち販売）</span>
+                    </td>
+                    <td className="border border-indigo-200 px-1 py-0.5 text-center font-bold" colSpan={2}>
+                      {conversion === null ? '' : `${conversion}%`}
+                    </td>
+                  </tr>
+                  <tr className="bg-indigo-100">
+                    <td className="border-2 border-indigo-500 px-1.5 py-0.5 font-bold" colSpan={3}>
+                      {meeting.month ? meeting.month.split('-')[0] : ''}年の販売累計
+                    </td>
+                    <td className="border-2 border-indigo-500 px-1 py-0.5 text-center font-bold" colSpan={2} style={{ fontSize: '12pt' }}>
+                      {yearHearingSales} 台
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <PrintSectionTitle number="3" title={`アクション数（1日${ACTION_DAY_GOAL}／週${ACTION_WEEK_GOAL}が目標）`} />
+            <PrintActionGrid weeks={meeting.actions} />
+
+            <PrintSectionTitle number="4" title="ケアマネ・ご家族からの声" />
+            <PrintBox
+              label={VOICE_FIELD.label}
+              hint={VOICE_FIELD.hint}
+              value={meeting.voices}
+              minHeight="32mm"
+              sky
+            />
+
+          </div>
+
+          {/* 中央：その他の目標 → 今月の振り返り（事実 → なぜ） */}
+          <div>
             {meeting.goals.some(g => g.item || g.goal || g.result) && (
-              <>
-                <PrintSectionTitle number="3" title="その他の目標と結果" />
+              <div className="mb-1.5">
+                <PrintSectionTitle number="5" title="その他の目標と結果" />
                 <table className="w-full border-collapse" style={{ fontSize: '9pt' }}>
                   <thead>
                     <tr className="bg-gray-100">
@@ -825,57 +1273,86 @@ function MeetingPreviewScreen({ meeting, onBack }) {
                   <tbody>
                     {meeting.goals.filter(g => g.item || g.goal || g.result).map((g, i) => (
                       <tr key={i}>
-                        <td className="border border-gray-400 px-1.5 py-1.5">{g.item}</td>
-                        <td className="border border-gray-400 px-1 py-1.5 text-center">{g.goal}</td>
-                        <td className="border border-gray-400 px-1 py-1.5 text-center">{g.result}</td>
+                        <td className="border border-gray-400 px-1.5 py-1">{g.item}</td>
+                        <td className="border border-gray-400 px-1 py-1 text-center">{g.goal}</td>
+                        <td className="border border-gray-400 px-1 py-1 text-center">{g.result}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              </>
+              </div>
             )}
-          </div>
 
-          {/* 中央：今月の振り返り（大きめの記入欄） */}
-          <div>
-            <PrintSectionTitle number="4" title="今月の振り返り（個人発表）" />
-            <div className="space-y-2">
-              {REVIEW_FIELDS.map(f => (
-                <PrintBox key={f.key} label={f.label} value={meeting.review[f.key]} minHeight="42mm" />
+            <PrintSectionTitle number="6" title="今月の振り返り" />
+
+            {prevLearning && (
+              <div className="border border-amber-400 rounded px-2 py-1 mb-1.5" style={{ background: '#fffbeb' }}>
+                <p className="font-bold text-amber-900" style={{ fontSize: '7.5pt' }}>
+                  先月の学び（{formatMonth(prevMonthOf(meeting.month))}）─ 今月これを実践できた？
+                </p>
+                <p className="text-gray-800" style={{ fontSize: '9pt', whiteSpace: 'pre-wrap' }}>{prevLearning}</p>
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <PrintBox label={DID_FIELD.label} value={meeting.review.did} minHeight="24mm" />
+
+              {REVIEW_PAIRS.map(pair => (
+                <PrintReflectionPair
+                  key={pair.key}
+                  title={pair.title}
+                  tone={pair.tone}
+                  whatLabel={pair.what.label}
+                  whatValue={meeting.review[pair.what.key]}
+                  whyLabel={pair.why.label}
+                  whyValue={meeting.review[pair.why.key]}
+                />
               ))}
             </div>
           </div>
 
-          {/* 右：全体共有＋来月の行動 */}
+          {/* 右：学び → 全体共有 → 来月の行動 */}
           <div>
-            <PrintSectionTitle number="5" title="全体共有（相談・成功事例・改善案）" />
-            <div className="space-y-2">
+            <PrintSectionTitle number="7" title="今月の学び" />
+            <div
+              className="border-2 border-amber-500 rounded overflow-hidden"
+              style={{ background: '#fffbeb' }}
+            >
+              <p className="px-2 py-0.5 font-bold bg-amber-100 text-amber-900" style={{ fontSize: '8.5pt' }}>
+                {LEARNING_FIELD.label}
+              </p>
+              <p className="px-2 py-1" style={{ minHeight: '30mm', fontSize: '10pt', whiteSpace: 'pre-wrap' }}>
+                {meeting.review.learning}
+              </p>
+            </div>
+
+            <PrintSectionTitle number="8" title="全体共有" />
+            <div className="space-y-1.5">
               {SHARE_FIELDS.map(f => (
-                <PrintBox key={f.key} label={f.label} value={meeting.share[f.key]} minHeight="30mm" />
+                <PrintBox key={f.key} label={f.label} value={meeting.share[f.key]} minHeight="17mm" />
               ))}
             </div>
 
-            <PrintSectionTitle number="6" title="来月の行動" />
-            <div className="space-y-2">
+            <PrintSectionTitle number="9" title="来月の行動" />
+            <div className="space-y-1.5">
               {NEXT_FIELDS.map(f => (
-                <PrintBox key={f.key} label={f.label} value={meeting.next[f.key]} minHeight="22mm" green />
+                <PrintBox
+                  key={f.key}
+                  label={f.label}
+                  hint={f.hint}
+                  value={meeting.next[f.key]}
+                  minHeight="26mm"
+                  green={f.key !== 'challenge'}
+                  highlight={f.key === 'challenge'}
+                />
               ))}
             </div>
           </div>
-        </div>
-
-        {/* 会議メモ（全幅） */}
-        <PrintSectionTitle number="7" title="会議メモ（当日記入：部長・SVコメント、決定事項）" />
-        <div
-          className="border border-gray-400 rounded px-2 py-1.5"
-          style={{ minHeight: '32mm', fontSize: '10pt', whiteSpace: 'pre-wrap' }}
-        >
-          {meeting.meetingNotes}
         </div>
 
         {/* フッター */}
         <div className="mt-2 pt-1.5 border-t border-gray-300 text-center text-gray-500" style={{ fontSize: '8pt' }}>
-          振り返りは「過去を責める時間」ではなく「未来を良くする時間」
+          振り返りは「過去を責める時間」ではなく「未来を良くする時間」／チャレンジは、うまくいかなくても収穫です
         </div>
       </div>
     </div>
@@ -896,16 +1373,107 @@ function PrintSectionTitle({ number, title }) {
   );
 }
 
-function PrintBox({ label, value, minHeight, green }) {
+// アクション数（月〜土 × 5週）の印刷用。週計・曜日計・総計つき
+function PrintActionGrid({ weeks }) {
+  const grand = actionGrandTotal(weeks);
+  const cell = 'border border-gray-400 text-center';
   return (
-    <div className={`border rounded overflow-hidden ${green ? 'border-green-600' : 'border-gray-400'}`}>
-      <p
-        className={`px-2 py-0.5 font-bold ${green ? 'bg-green-50 text-green-800' : 'bg-gray-100 text-gray-700'}`}
-        style={{ fontSize: '8.5pt' }}
-      >
-        {label}
-      </p>
+    <table className="w-full border-collapse" style={{ fontSize: '8.5pt' }}>
+      <thead>
+        <tr className="bg-gray-100">
+          <th className={`${cell} py-0.5 w-8`}></th>
+          {ACTION_DAYS.map(d => (
+            <th key={d} className={`${cell} py-0.5`}>{d}</th>
+          ))}
+          <th className={`${cell} py-0.5 w-10`}>週計</th>
+        </tr>
+      </thead>
+      <tbody>
+        {weeks.map((week, wi) => {
+          const total = actionWeekTotal(weeks, wi);
+          const reached = total !== null && total >= ACTION_WEEK_GOAL;
+          return (
+            <tr key={wi}>
+              <td className={`${cell} py-1 font-bold bg-gray-50`}>{wi + 1}</td>
+              {week.map((v, di) => {
+                const hit = v !== '' && Number(v) >= ACTION_DAY_GOAL;
+                return (
+                  <td key={di} className={`${cell} py-1 ${hit ? 'bg-green-50 font-bold' : ''}`}>
+                    {v === '' ? '' : v}
+                  </td>
+                );
+              })}
+              <td className={`${cell} py-1 font-bold ${total === null ? '' : reached ? 'text-green-600' : 'text-red-600'}`}>
+                {total ?? ''}
+              </td>
+            </tr>
+          );
+        })}
+        <tr className="bg-gray-100">
+          <td className={`${cell} py-1 font-bold`} style={{ fontSize: '7pt' }}>計</td>
+          {ACTION_DAYS.map((_, di) => (
+            <td key={di} className={`${cell} py-1 font-bold`}>{actionDayTotal(weeks, di) ?? ''}</td>
+          ))}
+          <td className={`${cell} py-1 font-bold`} style={{ fontSize: '10pt' }}>{grand ?? ''}</td>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+function PrintBox({ label, hint, value, minHeight, green, highlight, sky }) {
+  const border = highlight
+    ? 'border-blue-600'
+    : sky
+      ? 'border-sky-500'
+      : green
+        ? 'border-green-600'
+        : 'border-gray-400';
+  const head = highlight
+    ? 'bg-blue-50 text-blue-900'
+    : sky
+      ? 'bg-sky-50 text-sky-900'
+      : green
+        ? 'bg-green-50 text-green-800'
+        : 'bg-gray-100 text-gray-700';
+  return (
+    <div className={`border rounded overflow-hidden ${border} ${highlight ? 'border-2' : ''}`}>
+      <div className={`px-2 py-0.5 ${head}`}>
+        <p className="font-bold" style={{ fontSize: '8.5pt' }}>{label}</p>
+        {hint && <p style={{ fontSize: '7pt' }} className="opacity-80">{hint}</p>}
+      </div>
       <p className="px-2 py-1" style={{ minHeight, fontSize: '10pt', whiteSpace: 'pre-wrap' }}>{value}</p>
+    </div>
+  );
+}
+
+// 「何が起きたか」→「なぜそうなったか」を1つの枠にまとめて、因果が見える形にする
+function PrintReflectionPair({ title, tone, whatLabel, whatValue, whyLabel, whyValue }) {
+  const good = tone === 'good';
+  return (
+    <div className={`border-2 rounded overflow-hidden ${good ? 'border-green-600' : 'border-red-500'}`}>
+      <p
+        className={`px-2 py-0.5 font-bold ${good ? 'bg-green-100 text-green-900' : 'bg-red-100 text-red-900'}`}
+        style={{ fontSize: '9pt' }}
+      >
+        {title}
+      </p>
+
+      <div className="px-2 pt-1">
+        <p className="font-bold text-gray-600" style={{ fontSize: '7.5pt' }}>{whatLabel}</p>
+        <p style={{ minHeight: '28mm', fontSize: '10pt', whiteSpace: 'pre-wrap' }}>{whatValue}</p>
+      </div>
+
+      <div className={`flex items-center gap-1 px-2 ${good ? 'text-green-700' : 'text-red-700'}`}>
+        <span style={{ fontSize: '9pt', lineHeight: 1 }}>▼</span>
+        <span className="font-bold" style={{ fontSize: '7.5pt' }}>なぜ？</span>
+        <span className="flex-1 border-t border-dashed border-gray-400" />
+      </div>
+
+      <div className="px-2 pb-1 pt-0.5">
+        <p className="font-bold text-gray-600" style={{ fontSize: '7.5pt' }}>{whyLabel}</p>
+        <p style={{ minHeight: '32mm', fontSize: '10pt', whiteSpace: 'pre-wrap' }}>{whyValue}</p>
+      </div>
     </div>
   );
 }
