@@ -1,6 +1,7 @@
-import { useState, useEffect, Fragment } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import {
   ArrowLeft, Printer, Plus, Trash2, Save, History, FileText, Copy,
+  Download, Store, User, RefreshCw, Check,
 } from 'lucide-react';
 import { db } from './db';
 
@@ -121,6 +122,71 @@ const MONTHLY_GOALS = {
 };
 // 店としての目標。個人目標の合計より大きいので、差額が分かるように別で持つ
 const STORE_GOALS = { goodsYen: 1000000, rentalYen: 400000, renovationYen: 1750000 };
+
+// ===== 利益目標（今期1,000万円を3月〜2月に均等割り。1万円未満の端数は12月に寄せる） =====
+const PERIOD_PROFIT_GOAL = 10000000;
+const PERIOD_FIRST_MONTH = 3; // 3月始まり
+// 830,000 × 11ヶ月 ＋ 12月 870,000 ＝ 10,000,000
+const PROFIT_GOAL_BASE = Math.floor(PERIOD_PROFIT_GOAL / 12 / 10000) * 10000;
+const PROFIT_GOAL_DEC = PERIOD_PROFIT_GOAL - PROFIT_GOAL_BASE * 11;
+
+function profitGoalOf(month) {
+  if (!month) return PROFIT_GOAL_BASE;
+  return month.split('-')[1] === '12' ? PROFIT_GOAL_DEC : PROFIT_GOAL_BASE;
+}
+
+// その月が属する期の開始年（3月始まりなので、1月・2月は前年が期首）
+function periodStartYear(month) {
+  const [y, m] = month.split('-').map(Number);
+  return m >= PERIOD_FIRST_MONTH ? y : y - 1;
+}
+
+// 期首（3月）からその月までの月キーを並べる
+function periodMonthsUpTo(month) {
+  const sy = periodStartYear(month);
+  const out = [];
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(sy, PERIOD_FIRST_MONTH - 1 + i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    out.push(key);
+    if (key === month) break;
+  }
+  return out;
+}
+
+// 3月〜2月の並び（月別目標の一覧表示用）
+const PERIOD_MONTH_NUMBERS = Array.from({ length: 12 }, (_, i) => ((PERIOD_FIRST_MONTH - 1 + i) % 12) + 1);
+
+function profitGoalOfMonthNumber(n) {
+  return n === 12 ? PROFIT_GOAL_DEC : PROFIT_GOAL_BASE;
+}
+
+function profitGoalCumulative(month) {
+  return periodMonthsUpTo(month).reduce((s, m) => s + profitGoalOf(m), 0);
+}
+
+// A3横のシートをそのままPDFにする
+async function downloadSheetPdf(filename) {
+  const el = document.querySelector('.print-sheet');
+  if (!el) return false;
+  const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+    import('html2canvas'),
+    import('jspdf'),
+  ]);
+  const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#ffffff', useCORS: true });
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' });
+  pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, 420, 297);
+  // pdf.save() だとファイル名が付かない端末があるので、自前でダウンロードさせる
+  const url = URL.createObjectURL(pdf.output('blob'));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  return true;
+}
 
 function yen(v) {
   const n = Number(v);
@@ -355,12 +421,96 @@ function useYearHearingSales(staffName, month, currentMonthActual) {
   return otherMonths + (Number(currentMonthActual) || 0);
 }
 
+// ===== 市川店まとめ（店全体の1ヶ月分）=====
+
+const STORE_KIND = 'store';
+const STORE_STAFF_KEY = '__store__'; // 個別シートの検索に混ざらないための印
+
+function createEmptyStoreMonth(month) {
+  const members = {};
+  STAFF_OPTIONS.forEach(name => {
+    members[name] = { goodsYen: '', rentalYen: '', renovationYen: '' };
+  });
+  return {
+    kind: STORE_KIND,
+    staffName: STORE_STAFF_KEY,
+    month,
+    members,
+    profitActual: '',
+    note: '',
+  };
+}
+
+function normalizeStoreMonth(record, month) {
+  const base = createEmptyStoreMonth(month);
+  if (!record) return base;
+  const members = { ...base.members };
+  STAFF_OPTIONS.forEach(name => {
+    members[name] = { ...base.members[name], ...(record.members?.[name] || {}) };
+  });
+  return { ...base, ...record, members };
+}
+
+function sumNumbers(values) {
+  const nums = values.map(Number).filter(n => Number.isFinite(n));
+  return nums.length ? nums.reduce((a, b) => a + b, 0) : null;
+}
+
+// 指定月に保存されている個別シートを、担当営業ごとに1件ずつ拾う（同じ人の複数保存は最新を採用）
+function useMonthSheets(month, reloadKey) {
+  const [sheets, setSheets] = useState({});
+  useEffect(() => {
+    if (!month) { setSheets({}); return; }
+    let alive = true;
+    db.meetings.where('month').equals(month).toArray()
+      .then(records => {
+        if (!alive) return;
+        const latest = {};
+        records
+          .filter(r => r.kind !== STORE_KIND && STAFF_OPTIONS.includes(r.staffName))
+          .forEach(r => {
+            const cur = latest[r.staffName];
+            if (!cur || (r.updatedAt || 0) > (cur.updatedAt || 0)) latest[r.staffName] = r;
+          });
+        setSheets(latest);
+      })
+      .catch(() => setSheets({}));
+    return () => { alive = false; };
+  }, [month, reloadKey]);
+  return sheets;
+}
+
+// 期首から選択月までの、店まとめレコードすべて（利益の累計に使う）
+function usePeriodStoreMonths(month, reloadKey) {
+  const [records, setRecords] = useState([]);
+  useEffect(() => {
+    if (!month) { setRecords([]); return; }
+    let alive = true;
+    db.meetings.where('staffName').equals(STORE_STAFF_KEY).toArray()
+      .then(all => {
+        if (!alive) return;
+        const keys = new Set(periodMonthsUpTo(month));
+        const latest = new Map();
+        all.filter(r => keys.has(r.month)).forEach(r => {
+          const cur = latest.get(r.month);
+          if (!cur || (r.updatedAt || 0) > (cur.updatedAt || 0)) latest.set(r.month, r);
+        });
+        setRecords([...latest.values()]);
+      })
+      .catch(() => setRecords([]));
+    return () => { alive = false; };
+  }, [month, reloadKey]);
+  return records;
+}
+
 // ========== メイン ==========
 
 export default function App() {
   const [view, setView] = useState('editor');
   const [meeting, setMeeting] = useState(createEmptyMeeting());
   const [currentId, setCurrentId] = useState(null);
+  const [booting, setBooting] = useState(true);
+  const bootstrapped = useRef(false);
 
   const handleLoad = (record) => {
     const { id, createdAt, updatedAt, meetingNotes, ...data } = record;
@@ -384,6 +534,24 @@ export default function App() {
     setView('editor');
   };
 
+  // 起動時：前回と同じ担当営業の「今月のシート」があれば開く
+  // （毎回まっさらなシートを作ると、同じ月の空シートが増えてしまうため）
+  useEffect(() => {
+    if (bootstrapped.current) return;
+    bootstrapped.current = true;
+    const base = createEmptyMeeting();
+    if (!base.staffName) { setBooting(false); return; }
+    db.meetings.where('staffName').equals(base.staffName).toArray()
+      .then(all => {
+        const found = all
+          .filter(r => r.kind !== STORE_KIND && r.month === base.month)
+          .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+        if (found) handleLoad(found);
+      })
+      .catch(() => {})
+      .finally(() => setBooting(false));
+  }, []);
+
   // 翌月分を作成：ターゲット居宅と目標の枠は引き継ぎ、実績・振り返りはクリア
   const handleCopyNextMonth = (record) => {
     const base = createEmptyMeeting();
@@ -403,6 +571,10 @@ export default function App() {
     setView('editor');
   };
 
+  if (booting) {
+    return <div className="min-h-screen bg-gray-100 flex items-center justify-center text-gray-400 text-sm">読み込み中…</div>;
+  }
+
   if (view === 'list') {
     return (
       <MeetingListScreen
@@ -419,6 +591,18 @@ export default function App() {
     return <MeetingPreviewScreen meeting={meeting} onBack={() => setView('editor')} />;
   }
 
+  if (view === 'store' || view === 'storePreview') {
+    return (
+      <StoreSummaryScreen
+        month={meeting.month}
+        preview={view === 'storePreview'}
+        onPreview={() => setView('storePreview')}
+        onBackToEdit={() => setView('store')}
+        onSwitchToPersonal={() => setView('editor')}
+      />
+    );
+  }
+
   return (
     <MeetingEditorScreen
       meeting={meeting}
@@ -427,13 +611,73 @@ export default function App() {
       onCurrentIdChange={setCurrentId}
       onPreview={() => setView('preview')}
       onList={() => setView('list')}
+      onStore={() => setView('store')}
     />
+  );
+}
+
+// 個別シート ⇄ 市川店まとめ の切り替えタブ
+function ModeTabs({ mode, onPersonal, onStore }) {
+  const base = 'flex-1 py-2.5 rounded-lg font-bold text-sm active:opacity-70 border-2';
+  return (
+    <div className="flex gap-2">
+      <button
+        onClick={onPersonal}
+        className={`${base} ${mode === 'personal' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-300'}`}
+      >
+        <User className="w-4 h-4 inline mr-1" />
+        個別シート
+      </button>
+      <button
+        onClick={onStore}
+        className={`${base} ${mode === 'store' ? 'bg-teal-700 text-white border-teal-700' : 'bg-white text-gray-600 border-gray-300'}`}
+      >
+        <Store className="w-4 h-4 inline mr-1" />
+        市川店まとめ
+      </button>
+    </div>
+  );
+}
+
+// 印刷とPDFのボタン（プレビュー画面の共通パーツ）
+function PrintActions({ filename, paper }) {
+  const [busy, setBusy] = useState(false);
+  const handlePdf = async () => {
+    setBusy(true);
+    try {
+      await downloadSheetPdf(filename);
+    } catch (e) {
+      console.error(e);
+      window.alert('PDFの作成に失敗しました。「印刷」からPDF保存をお試しください。');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-gray-300 mr-1 hidden sm:inline">{paper}で印刷してください</span>
+      <button
+        onClick={handlePdf}
+        disabled={busy}
+        className="bg-white/15 text-white px-4 py-2.5 rounded-lg font-bold text-sm flex items-center gap-1.5 active:opacity-70 disabled:opacity-50"
+      >
+        <Download className="w-4 h-4" />
+        {busy ? '作成中…' : 'PDF'}
+      </button>
+      <button
+        onClick={() => window.print()}
+        className="bg-white text-gray-900 px-5 py-2.5 rounded-lg font-bold text-sm flex items-center gap-1.5 active:opacity-70"
+      >
+        <Printer className="w-4 h-4" />
+        印刷
+      </button>
+    </div>
   );
 }
 
 // ========== 編集画面 ==========
 
-function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange, onPreview, onList }) {
+function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange, onPreview, onList, onStore }) {
   const [saveStatus, setSaveStatus] = useState('saved');
   const prevRecord = usePrevMonthRecord(meeting.staffName, meeting.month);
   const conversion = hearingConversion(meeting.results);
@@ -520,6 +764,34 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
     unsaved: { label: '未保存', color: 'text-orange-500' },
   }[saveStatus];
 
+  // 「保存」ボタン：自動保存を待たずにその場で書き込む
+  const [justSaved, setJustSaved] = useState(false);
+  const saveNow = async () => {
+    if (!meeting.staffName) {
+      window.alert('担当営業を選ぶと保存できます');
+      return;
+    }
+    try {
+      setSaveStatus('saving');
+      const now = Date.now();
+      const data = { ...meeting, updatedAt: now };
+      if (currentId) {
+        data.id = currentId;
+        await db.meetings.put(data);
+      } else {
+        data.createdAt = now;
+        onCurrentIdChange(await db.meetings.add(data));
+      }
+      setSaveStatus('saved');
+      setJustSaved(true);
+      setTimeout(() => setJustSaved(false), 2000);
+    } catch (e) {
+      console.error('Save failed', e);
+      setSaveStatus('unsaved');
+      window.alert('保存できませんでした');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-100 pb-32">
       {/* ヘッダー */}
@@ -541,6 +813,15 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
               一覧
             </button>
             <button
+              onClick={saveNow}
+              className={`px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1.5 active:opacity-70 ${
+                justSaved ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-700'
+              }`}
+            >
+              {justSaved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+              {justSaved ? '保存しました' : '保存'}
+            </button>
+            <button
               onClick={onPreview}
               className="bg-gray-900 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-1.5 active:bg-gray-700"
             >
@@ -548,6 +829,9 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
               プレビュー
             </button>
           </div>
+        </div>
+        <div className="max-w-3xl mx-auto px-4 pb-3">
+          <ModeTabs mode="personal" onPersonal={() => {}} onStore={onStore} />
         </div>
       </div>
 
@@ -1092,7 +1376,7 @@ function MeetingListScreen({ currentId, onLoad, onNew, onCopyNextMonth, onBack }
   const loadRecords = async () => {
     setLoading(true);
     try {
-      const all = await db.meetings.toArray();
+      const all = (await db.meetings.toArray()).filter(r => r.kind !== STORE_KIND);
       all.sort((a, b) => (b.month || '').localeCompare(a.month || '') || (b.updatedAt || 0) - (a.updatedAt || 0));
       setRecords(all);
     } finally {
@@ -1182,7 +1466,6 @@ function MeetingListScreen({ currentId, onLoad, onNew, onCopyNextMonth, onBack }
 // ========== A3横プレビュー画面 ==========
 
 function MeetingPreviewScreen({ meeting, onBack }) {
-  const handlePrint = () => window.print();
   const prevRecord = usePrevMonthRecord(meeting.staffName, meeting.month);
   // 先月の学びを持ち越して表示する（旧形式で保存された記録にも対応）
   const prevLearning = prevRecord ? migrateReview(prevRecord.review).learning : '';
@@ -1210,16 +1493,10 @@ function MeetingPreviewScreen({ meeting, onBack }) {
           <ArrowLeft className="w-5 h-5" />
           <span className="text-sm font-bold">編集に戻る</span>
         </button>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-300">A3横で印刷してください</span>
-          <button
-            onClick={handlePrint}
-            className="bg-white text-gray-900 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-1.5"
-          >
-            <Printer className="w-4 h-4" />
-            印刷
-          </button>
-        </div>
+        <PrintActions
+          paper="A3横"
+          filename={`営業会議シート_${meeting.staffName || '未設定'}_${meeting.month || ''}.pdf`}
+        />
       </div>
 
       {/* A3横シート */}
@@ -1642,6 +1919,711 @@ function PrintReflectionPair({ title, tone, whatLabel, whatValue, whyLabel, whyV
       <div className="px-2 pb-1 pt-0.5">
         <p className="font-bold text-gray-600" style={{ fontSize: '7.5pt' }}>{whyLabel}</p>
         <p style={{ minHeight: '32mm', fontSize: '10pt', whiteSpace: 'pre-wrap' }}>{whyValue}</p>
+      </div>
+    </div>
+  );
+}
+
+// ========== 市川店まとめ ==========
+
+function StoreSummaryScreen({ month: initialMonth, preview, onPreview, onBackToEdit, onSwitchToPersonal }) {
+  const [month, setMonth] = useState(initialMonth || createEmptyMeeting().month);
+  const [store, setStore] = useState(() => createEmptyStoreMonth(initialMonth || createEmptyMeeting().month));
+  const [storeId, setStoreId] = useState(null);
+  const [storeLoaded, setStoreLoaded] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [justSaved, setJustSaved] = useState(false);
+  const sheets = useMonthSheets(month, reloadKey);
+  const periodStores = usePeriodStoreMonths(month, reloadKey);
+
+  // 対象月の店まとめレコードを読み込む
+  useEffect(() => {
+    let alive = true;
+    setStoreLoaded(false);
+    db.meetings.where('staffName').equals(STORE_STAFF_KEY).toArray()
+      .then(all => {
+        if (!alive) return;
+        const found = all
+          .filter(r => r.month === month)
+          .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+        setStore(normalizeStoreMonth(found, month));
+        setStoreId(found?.id ?? null);
+        setStoreLoaded(true);
+      })
+      .catch(() => {
+        setStore(createEmptyStoreMonth(month));
+        setStoreId(null);
+        setStoreLoaded(true);
+      });
+    return () => { alive = false; };
+  }, [month]);
+
+  // 空欄の金額は、保存済みの個別シートから自動で埋める（店レコードの読み込み後）
+  useEffect(() => {
+    if (!storeLoaded) return;
+    setStore(prev => {
+      let changed = false;
+      const members = { ...prev.members };
+      STAFF_OPTIONS.forEach(name => {
+        const record = sheets[name];
+        if (!record) return;
+        const m = { ...members[name] };
+        MONEY_ITEMS.forEach(item => {
+          const v = record.results?.[item.key]?.actual;
+          if ((m[item.key] === '' || m[item.key] == null) && v !== '' && v != null) {
+            m[item.key] = String(v);
+            changed = true;
+          }
+        });
+        members[name] = m;
+      });
+      return changed ? { ...prev, members } : prev;
+    });
+  }, [sheets, storeLoaded]);
+
+  // 自動保存
+  useEffect(() => {
+    if (!storeLoaded) return;
+    const timer = setTimeout(async () => {
+      try {
+        const now = Date.now();
+        const data = { ...store, month, updatedAt: now };
+        if (storeId) {
+          data.id = storeId;
+          await db.meetings.put(data);
+        } else {
+          data.createdAt = now;
+          setStoreId(await db.meetings.add(data));
+        }
+      } catch (e) {
+        console.error('Store auto-save failed', e);
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [store, month, storeLoaded]);
+
+  const updateMember = (name, key, value) =>
+    setStore(prev => ({
+      ...prev,
+      members: { ...prev.members, [name]: { ...prev.members[name], [key]: value } },
+    }));
+
+  // 個別シートの実績で、手入力の値も含めて上書きする
+  const pullFromSheets = () => {
+    setStore(prev => {
+      const members = { ...prev.members };
+      STAFF_OPTIONS.forEach(name => {
+        const record = sheets[name];
+        if (!record) return;
+        const m = { ...members[name] };
+        MONEY_ITEMS.forEach(item => {
+          const v = record.results?.[item.key]?.actual;
+          m[item.key] = v == null ? '' : String(v);
+        });
+        members[name] = m;
+      });
+      return { ...prev, members };
+    });
+    setReloadKey(k => k + 1);
+  };
+
+  const saveNow = async () => {
+    try {
+      const now = Date.now();
+      const data = { ...store, month, updatedAt: now };
+      if (storeId) {
+        data.id = storeId;
+        await db.meetings.put(data);
+      } else {
+        data.createdAt = now;
+        setStoreId(await db.meetings.add(data));
+      }
+      setJustSaved(true);
+      setTimeout(() => setJustSaved(false), 2000);
+    } catch (e) {
+      console.error(e);
+      window.alert('保存できませんでした');
+    }
+  };
+
+  const foundMembers = STAFF_OPTIONS.filter(n => sheets[n]);
+  const memberTotal = name => sumNumbers(MONEY_ITEMS.map(i => store.members[name]?.[i.key]).filter(v => v !== ''));
+  const itemTotal = key => sumNumbers(STAFF_OPTIONS.map(n => store.members[n]?.[key]).filter(v => v !== ''));
+  const grandTotal = sumNumbers(
+    STAFF_OPTIONS.flatMap(n => MONEY_ITEMS.map(i => store.members[n]?.[i.key])).filter(v => v !== '')
+  );
+  const storeGoalTotal = MONEY_ITEMS.reduce((s, i) => s + STORE_GOALS[i.key], 0);
+
+  const profitGoal = profitGoalOf(month);
+  const profitRate = achievementRate(profitGoal, store.profitActual);
+  const cumGoal = profitGoalCumulative(month);
+  const cumActual =
+    periodStores.filter(r => r.month !== month).reduce((s, r) => s + (Number(r.profitActual) || 0), 0) +
+    (Number(store.profitActual) || 0);
+  const cumRate = cumGoal ? Math.round((cumActual / cumGoal) * 100) : null;
+  const yearRate = Math.round((cumActual / PERIOD_PROFIT_GOAL) * 100);
+
+  const focusItems = [
+    ...COUNT_ITEMS.filter(i => i.focus),
+    ...HEARING_ITEMS.filter(i => i.focus).map(i => ({ ...i, label: `補聴器 ${i.label}` })),
+  ];
+  const countTotal = key =>
+    sumNumbers(foundMembers.map(n => sheets[n].results?.[key]?.actual).filter(v => v !== '' && v != null));
+  const actionTotal = sumNumbers(
+    foundMembers.map(n => actionGrandTotal(normalizeActions(sheets[n].actions))).filter(v => v !== null)
+  );
+  // 営業別の件数・アクション数（その人のシートが端末にある場合のみ）
+  const countOf = (name, key) => {
+    const v = sheets[name]?.results?.[key]?.actual;
+    return v === '' || v == null ? null : Number(v);
+  };
+  const actionOf = name => (sheets[name] ? actionGrandTotal(normalizeActions(sheets[name].actions)) : null);
+  const memberGoalTotal = name =>
+    MONEY_ITEMS.reduce((sum, i) => sum + (MONTHLY_GOALS[name]?.[i.key] || 0), 0);
+
+  const summary = {
+    month, store, foundMembers, memberTotal, itemTotal, grandTotal, storeGoalTotal,
+    profitGoal, profitRate, cumGoal, cumActual, cumRate, yearRate, focusItems, countTotal, actionTotal,
+    countOf, actionOf, memberGoalTotal,
+  };
+
+  if (preview) return <StorePreviewScreen summary={summary} onBack={onBackToEdit} />;
+
+  return (
+    <div className="min-h-screen bg-gray-100 pb-32">
+      <div className="bg-white shadow-sm sticky top-0 z-10 border-b">
+        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-bold tracking-wide">市川店まとめ</h1>
+            <p className="text-xs text-gray-400">3人の実績と、店の利益進捗</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={saveNow}
+              className={`px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1.5 active:opacity-70 ${
+                justSaved ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-700'
+              }`}
+            >
+              {justSaved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+              {justSaved ? '保存しました' : '保存'}
+            </button>
+            <button
+              onClick={onPreview}
+              className="bg-teal-700 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-1.5 active:bg-teal-800"
+            >
+              <FileText className="w-4 h-4" />
+              プレビュー
+            </button>
+          </div>
+        </div>
+        <div className="max-w-3xl mx-auto px-4 pb-3">
+          <ModeTabs mode="store" onPersonal={onSwitchToPersonal} onStore={() => {}} />
+        </div>
+      </div>
+
+      <div className="max-w-3xl mx-auto px-3 py-3 space-y-3">
+        {/* 対象月と取り込み */}
+        <div className="bg-white rounded-xl shadow-sm p-4 space-y-3">
+          <div className="flex items-end gap-3">
+            <div className="flex-1">
+              <label className="block text-xs font-semibold text-gray-600 mb-1">対象月</label>
+              <input
+                type="month"
+                value={month}
+                onChange={e => setMonth(e.target.value)}
+                className="w-full border rounded-lg px-3 py-2 text-base"
+              />
+            </div>
+            <button
+              onClick={pullFromSheets}
+              className="bg-gray-900 text-white px-4 py-2.5 rounded-lg font-bold text-sm flex items-center gap-1.5 active:opacity-70"
+            >
+              <RefreshCw className="w-4 h-4" />
+              シートから取り込む
+            </button>
+          </div>
+          <p className="text-xs text-gray-500">
+            この端末に保存されている{formatMonth(month)}のシート：
+            <span className="font-bold text-gray-800 mx-1">
+              {foundMembers.length ? foundMembers.join('・') : 'なし'}
+            </span>
+            （{foundMembers.length}名）
+          </p>
+          {foundMembers.length < STAFF_OPTIONS.length && (
+            <p className="text-xs text-orange-600">
+              ※データは端末ごとに保存されます。この端末にないメンバーの数字は、下の欄に手入力してください。
+            </p>
+          )}
+        </div>
+
+        {/* 営業別 売上 */}
+        <SectionCard number="1" title="営業別 売上（税抜）" subtitle="シートから取り込むか、手入力してください">
+          <div className="space-y-3">
+            <div className="grid grid-cols-[64px_1fr_1fr_1fr] gap-2 text-xs font-semibold text-gray-600 px-1">
+              <span></span>
+              {MONEY_ITEMS.map(i => <span key={i.key} className="text-center">{i.label}</span>)}
+            </div>
+            {STAFF_OPTIONS.map(name => (
+              <div key={name} className="grid grid-cols-[64px_1fr_1fr_1fr] gap-2 items-center">
+                <span className="font-bold text-sm text-gray-800 flex items-center gap-1">
+                  {name}
+                  {sheets[name] && <Check className="w-3 h-3 text-green-600" />}
+                </span>
+                {MONEY_ITEMS.map(item => (
+                  <input
+                    key={item.key}
+                    type="number"
+                    inputMode="numeric"
+                    value={store.members[name]?.[item.key] ?? ''}
+                    onChange={e => updateMember(name, item.key, e.target.value)}
+                    placeholder="0"
+                    className="border rounded-lg px-2 py-2 text-sm text-right"
+                  />
+                ))}
+              </div>
+            ))}
+
+            <div className="border-t pt-3 space-y-2">
+              {MONEY_ITEMS.map(item => {
+                const total = itemTotal(item.key);
+                const goal = STORE_GOALS[item.key];
+                const rate = achievementRate(goal, total);
+                const rest = remaining(goal, total);
+                return (
+                  <div key={item.key} className="grid grid-cols-[1fr_92px_92px_60px] gap-2 items-center">
+                    <span className="font-bold text-sm text-gray-800">{item.label}　<span className="font-normal text-xs text-gray-400">店目標 {yen(goal)}</span></span>
+                    <span className="text-right text-sm font-bold">{total === null ? '─' : yen(total)}</span>
+                    <span className={`text-right text-sm ${rest === null ? 'text-gray-400' : rest < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                      {rest === null ? '─' : `${rest > 0 ? '+' : ''}${yen(rest)}`}
+                    </span>
+                    <span className={`text-center text-sm font-bold ${rateColor(rate)}`}>
+                      {rate === null ? '─' : `${rate}%`}
+                    </span>
+                  </div>
+                );
+              })}
+              <div className="grid grid-cols-[1fr_92px_92px_60px] gap-2 items-center bg-gray-50 rounded-lg py-2 px-1">
+                <span className="font-bold text-sm text-gray-900">合計　<span className="font-normal text-xs text-gray-400">店目標 {yen(storeGoalTotal)}</span></span>
+                <span className="text-right text-base font-bold">{grandTotal === null ? '─' : yen(grandTotal)}</span>
+                <span className={`text-right text-sm ${remaining(storeGoalTotal, grandTotal) === null ? 'text-gray-400' : remaining(storeGoalTotal, grandTotal) < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                  {grandTotal === null ? '─' : `${remaining(storeGoalTotal, grandTotal) > 0 ? '+' : ''}${yen(remaining(storeGoalTotal, grandTotal))}`}
+                </span>
+                <span className={`text-center text-base font-bold ${rateColor(achievementRate(storeGoalTotal, grandTotal))}`}>
+                  {achievementRate(storeGoalTotal, grandTotal) === null ? '─' : `${achievementRate(storeGoalTotal, grandTotal)}%`}
+                </span>
+              </div>
+              <p className="text-xs text-gray-400 pt-1">
+                ※一人あたりの合計：{STAFF_OPTIONS.map(n => `${n} ${memberTotal(n) === null ? '─' : yen(memberTotal(n))}`).join('　')}
+              </p>
+            </div>
+          </div>
+        </SectionCard>
+
+        {/* 利益 */}
+        <SectionCard number="2" title="利益" subtitle={`今期の利益目標 ${yen(PERIOD_PROFIT_GOAL)}円（3月〜2月）`} accent="border-amber-400">
+          <div className="space-y-3">
+            <div className="grid grid-cols-[1fr_120px_70px] gap-2 items-center">
+              <span className="font-bold text-sm text-gray-800">
+                今月の利益目標
+                <span className="block text-xs font-normal text-gray-400">
+                  {month.split('-')[1] === '12' ? '12月は端数を上乗せ' : '月あたり均等割り'}
+                </span>
+              </span>
+              <span className="text-right text-base font-bold text-gray-700">{yen(profitGoal)}</span>
+              <span></span>
+            </div>
+            <div className="grid grid-cols-[1fr_120px_70px] gap-2 items-center">
+              <span className="font-bold text-sm text-gray-800">今月の利益実績</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                value={store.profitActual}
+                onChange={e => setStore(prev => ({ ...prev, profitActual: e.target.value }))}
+                placeholder="0"
+                className="border rounded-lg px-2 py-2 text-base text-right font-bold"
+              />
+              <span className={`text-center text-base font-bold ${rateColor(profitRate)}`}>
+                {profitRate === null ? '─' : `${profitRate}%`}
+              </span>
+            </div>
+
+            <div className="rounded-lg bg-amber-50 border-2 border-amber-300 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-bold text-amber-900">期首（3月）からの累計</span>
+                <span className="text-xs text-amber-700">{periodMonthsUpTo(month).length}ヶ月目</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div>
+                  <p className="text-xs text-gray-500">累計目標</p>
+                  <p className="text-base font-bold text-gray-700">{yen(cumGoal)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">累計実績</p>
+                  <p className="text-base font-bold text-gray-900">{yen(cumActual)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">対 累計目標</p>
+                  <p className={`text-base font-bold ${rateColor(cumRate)}`}>{cumRate === null ? '─' : `${cumRate}%`}</p>
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center justify-between text-xs text-amber-800 mb-1">
+                  <span>今期1,000万円に対する進捗</span>
+                  <span className="font-bold">{yearRate}%</span>
+                </div>
+                <div className="h-3 rounded-full bg-white overflow-hidden border border-amber-300">
+                  <div className="h-full bg-amber-500" style={{ width: `${Math.min(100, Math.max(0, yearRate))}%` }} />
+                </div>
+              </div>
+            </div>
+          </div>
+        </SectionCard>
+
+        {/* ★重点件数とアクション */}
+        <SectionCard number="3" title="★重点件数・アクション数" subtitle={`この端末にある${foundMembers.length}名分のシートから自動集計`} accent="border-teal-400">
+          {foundMembers.length === 0 ? (
+            <p className="text-sm text-gray-400 py-2">{formatMonth(month)}のシートがこの端末に保存されていません。</p>
+          ) : (
+            <div className="space-y-2">
+              {focusItems.map(item => (
+                <div key={item.key} className="flex items-center justify-between border-b border-gray-100 pb-1.5">
+                  <span className="text-sm font-bold text-gray-800">
+                    <span className="text-amber-500 mr-0.5">★</span>{item.label}
+                  </span>
+                  <span className="text-base font-bold text-gray-900">
+                    {countTotal(item.key) ?? '─'}<span className="text-xs font-normal text-gray-400 ml-1">{item.unit}</span>
+                  </span>
+                </div>
+              ))}
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-sm font-bold text-gray-800">アクション数の合計</span>
+                <span className="text-xl font-bold text-teal-700">{actionTotal ?? '─'}</span>
+              </div>
+            </div>
+          )}
+        </SectionCard>
+
+        {/* 一言 */}
+        <SectionCard number="4" title="店としての一言" subtitle="今月の店の課題と、来月の一手" accent="border-gray-400">
+          <TextField
+            bare
+            label=""
+            value={store.note}
+            onChange={v => setStore(prev => ({ ...prev, note: v }))}
+            rows={4}
+            placeholder="例：住改が店目標の2割で止まっている。現調から受注までの歩留まりを来月の全体テーマにする。"
+          />
+        </SectionCard>
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-3 shadow-lg">
+        <div className="max-w-3xl mx-auto">
+          <button
+            onClick={onPreview}
+            className="w-full bg-teal-700 text-white py-4 rounded-xl font-bold text-base flex items-center justify-center gap-2 active:bg-teal-800"
+          >
+            <FileText className="w-5 h-5" />
+            A3プレビューを見る
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ========== 市川店まとめ A3プレビュー ==========
+
+function StorePreviewScreen({ summary, onBack }) {
+  const {
+    month, store, foundMembers, memberTotal, itemTotal, grandTotal, storeGoalTotal,
+    profitGoal, profitRate, cumGoal, cumActual, cumRate, yearRate, focusItems, countTotal, actionTotal,
+    countOf, actionOf, memberGoalTotal,
+  } = summary;
+
+  const totalRest = remaining(storeGoalTotal, grandTotal);
+  const totalRate = achievementRate(storeGoalTotal, grandTotal);
+
+  return (
+    <div className="bg-gray-200 min-h-screen">
+      <style>{`
+        @media print {
+          @page { size: A3 landscape; margin: 0; }
+          body { background: white; }
+          .no-print { display: none !important; }
+          .print-sheet { box-shadow: none !important; margin: 0 !important; width: 420mm !important; min-height: 297mm !important; }
+        }
+      `}</style>
+
+      <div className="no-print sticky top-0 bg-teal-800 text-white px-4 py-3 flex items-center justify-between z-10 shadow-md">
+        <button onClick={onBack} className="flex items-center gap-1 active:opacity-60">
+          <ArrowLeft className="w-5 h-5" />
+          <span className="text-sm font-bold">編集に戻る</span>
+        </button>
+        <PrintActions paper="A3横" filename={`市川店まとめ_${month}.pdf`} />
+      </div>
+
+      <div
+        className="print-sheet bg-white mx-auto my-4 shadow-xl"
+        style={{ width: '420mm', minHeight: '297mm', padding: '10mm 12mm', fontSize: '10pt', color: '#111' }}
+      >
+        {/* ヘッダー */}
+        <div className="flex items-end justify-between border-b-2 border-gray-900 pb-2">
+          <div className="flex items-end gap-6">
+            <h1 style={{ fontSize: '19pt' }} className="font-bold tracking-wide">市川店　月次まとめ</h1>
+            <span className="bg-teal-700 text-white font-bold px-3 py-0.5" style={{ fontSize: '11pt' }}>
+              {formatMonth(month)}
+            </span>
+          </div>
+          <p style={{ fontSize: '9pt' }} className="text-gray-500">
+            パナソニックエイジフリーショップ市川店　／　第50期（3月〜2月）
+          </p>
+        </div>
+
+        <div className="grid mt-3" style={{ gridTemplateColumns: '1fr 150mm', gap: '7mm' }}>
+          {/* 左：売上 */}
+          <div>
+            <PrintSectionTitle number="1" title="営業別 売上（税抜）" />
+            <table className="w-full border-collapse" style={{ fontSize: '10pt' }}>
+              <thead>
+                <tr className="bg-gray-100">
+                  <th className="border border-gray-400 px-2 py-1 text-left w-20">担当</th>
+                  {MONEY_ITEMS.map(i => (
+                    <th key={i.key} className="border border-gray-400 px-2 py-1">{i.label}</th>
+                  ))}
+                  <th className="border border-gray-400 px-2 py-1 bg-gray-200">合計</th>
+                  <th className="border border-gray-400 px-2 py-1 w-20">個人<br />達成率</th>
+                </tr>
+              </thead>
+              <tbody>
+                {STAFF_OPTIONS.map(name => (
+                  <tr key={name}>
+                    <td className="border border-gray-400 px-2 py-1.5 font-bold">{name}</td>
+                    {MONEY_ITEMS.map(i => (
+                      <td key={i.key} className="border border-gray-400 px-2 py-1.5 text-right">
+                        {yen(store.members[name]?.[i.key])}
+                      </td>
+                    ))}
+                    <td className="border border-gray-400 px-2 py-1.5 text-right font-bold bg-gray-50">
+                      {memberTotal(name) === null ? '' : yen(memberTotal(name))}
+                    </td>
+                    <td className={`border border-gray-400 px-2 py-1.5 text-center font-bold ${rateColor(achievementRate(memberGoalTotal(name), memberTotal(name)))}`}>
+                      {achievementRate(memberGoalTotal(name), memberTotal(name)) === null
+                        ? ''
+                        : `${achievementRate(memberGoalTotal(name), memberTotal(name))}%`}
+                    </td>
+                  </tr>
+                ))}
+                <tr className="bg-gray-100">
+                  <td className="border border-gray-400 px-2 py-1.5 font-bold">3人合計</td>
+                  {MONEY_ITEMS.map(i => (
+                    <td key={i.key} className="border border-gray-400 px-2 py-1.5 text-right font-bold">
+                      {itemTotal(i.key) === null ? '' : yen(itemTotal(i.key))}
+                    </td>
+                  ))}
+                  <td className="border-2 border-gray-700 px-2 py-1.5 text-right font-bold" style={{ fontSize: '12pt' }}>
+                    {grandTotal === null ? '' : yen(grandTotal)}
+                  </td>
+                  <td className="border border-gray-400" />
+                </tr>
+                <tr>
+                  <td className="border border-gray-400 px-2 py-1 text-gray-600">店目標</td>
+                  {MONEY_ITEMS.map(i => (
+                    <td key={i.key} className="border border-gray-400 px-2 py-1 text-right text-gray-600">
+                      {yen(STORE_GOALS[i.key])}
+                    </td>
+                  ))}
+                  <td className="border border-gray-400 px-2 py-1 text-right text-gray-600">{yen(storeGoalTotal)}</td>
+                  <td className="border border-gray-400" />
+                </tr>
+                <tr>
+                  <td className="border border-gray-400 px-2 py-1 font-bold">達成率</td>
+                  {MONEY_ITEMS.map(i => {
+                    const rate = achievementRate(STORE_GOALS[i.key], itemTotal(i.key));
+                    return (
+                      <td key={i.key} className={`border border-gray-400 px-2 py-1 text-center font-bold ${rateColor(rate)}`}>
+                        {rate === null ? '' : `${rate}%`}
+                      </td>
+                    );
+                  })}
+                  <td className={`border-2 border-gray-700 px-2 py-1 text-center font-bold ${rateColor(totalRate)}`} style={{ fontSize: '12pt' }}>
+                    {totalRate === null ? '' : `${totalRate}%`}
+                  </td>
+                  <td className="border border-gray-400" />
+                </tr>
+                <tr>
+                  <td className="border border-gray-400 px-2 py-1 text-gray-600">あと</td>
+                  {MONEY_ITEMS.map(i => {
+                    const rest = remaining(STORE_GOALS[i.key], itemTotal(i.key));
+                    return (
+                      <td key={i.key} className={`border border-gray-400 px-2 py-1 text-right ${rest === null ? '' : rest < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {rest === null ? '' : `${rest > 0 ? '+' : ''}${yen(rest)}`}
+                      </td>
+                    );
+                  })}
+                  <td className={`border border-gray-400 px-2 py-1 text-right font-bold ${totalRest === null ? '' : totalRest < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                    {totalRest === null ? '' : `${totalRest > 0 ? '+' : ''}${yen(totalRest)}`}
+                  </td>
+                  <td className="border border-gray-400" />
+                </tr>
+              </tbody>
+            </table>
+
+            <PrintSectionTitle number="3" title={`★重点件数・アクション数（この端末にある${foundMembers.length}名分）`} />
+            <table className="w-full border-collapse" style={{ fontSize: '10pt' }}>
+              <thead>
+                <tr className="bg-gray-100">
+                  <th className="border border-gray-400 px-2 py-1 text-left">項目</th>
+                  {STAFF_OPTIONS.map(n => (
+                    <th key={n} className="border border-gray-400 px-2 py-1 w-20">{n}</th>
+                  ))}
+                  <th className="border border-gray-400 px-2 py-1 w-20 bg-gray-200">合計</th>
+                </tr>
+              </thead>
+              <tbody>
+                {focusItems.map(item => (
+                  <tr key={item.key}>
+                    <td className="border border-gray-400 px-2 py-1.5 font-bold">
+                      <span className="text-amber-600">★</span>{item.label}
+                      <span className="font-normal text-gray-500">（{item.unit}）</span>
+                    </td>
+                    {STAFF_OPTIONS.map(n => (
+                      <td key={n} className="border border-gray-400 px-2 py-1.5 text-center">
+                        {countOf(n, item.key) ?? ''}
+                      </td>
+                    ))}
+                    <td className="border border-gray-400 px-2 py-1.5 text-center font-bold bg-gray-50" style={{ fontSize: '11pt' }}>
+                      {countTotal(item.key) ?? ''}
+                    </td>
+                  </tr>
+                ))}
+                <tr className="bg-teal-50">
+                  <td className="border-2 border-teal-600 px-2 py-1.5 font-bold text-teal-900">
+                    アクション数
+                    <span className="font-normal text-teal-700" style={{ fontSize: '8pt' }}>（1日10／週50が目標）</span>
+                  </td>
+                  {STAFF_OPTIONS.map(n => (
+                    <td key={n} className="border-2 border-teal-600 px-2 py-1.5 text-center font-bold text-teal-900">
+                      {actionOf(n) ?? ''}
+                    </td>
+                  ))}
+                  <td className="border-2 border-teal-600 px-2 py-1.5 text-center font-bold text-teal-900" style={{ fontSize: '14pt' }}>
+                    {actionTotal ?? ''}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <PrintSectionTitle number="4" title="店としての一言" />
+            <div className="border border-gray-400 rounded px-2 py-1.5" style={{ minHeight: '58mm' }}>
+              <p style={{ fontSize: '10.5pt', whiteSpace: 'pre-wrap' }}>{store.note}</p>
+            </div>
+          </div>
+
+          {/* 右：利益 */}
+          <div>
+            <PrintSectionTitle number="2" title="利益（今期目標 1,000万円）" />
+
+            <div className="border-2 border-amber-500 rounded overflow-hidden" style={{ background: '#fffbeb' }}>
+              <p className="px-2 py-1 font-bold bg-amber-100 text-amber-900" style={{ fontSize: '10pt' }}>
+                {formatMonth(month)}
+              </p>
+              <table className="w-full border-collapse" style={{ fontSize: '11pt' }}>
+                <tbody>
+                  <tr>
+                    <td className="border border-amber-300 px-2 py-2 font-bold">今月の利益目標</td>
+                    <td className="border border-amber-300 px-2 py-2 text-right">{yen(profitGoal)}</td>
+                  </tr>
+                  <tr>
+                    <td className="border border-amber-300 px-2 py-2 font-bold">今月の利益実績</td>
+                    <td className="border border-amber-300 px-2 py-2 text-right font-bold" style={{ fontSize: '14pt' }}>
+                      {yen(store.profitActual)}
+                    </td>
+                  </tr>
+                  <tr className="bg-amber-100">
+                    <td className="border-2 border-amber-500 px-2 py-2 font-bold">達成率</td>
+                    <td className={`border-2 border-amber-500 px-2 py-2 text-center font-bold ${rateColor(profitRate)}`} style={{ fontSize: '17pt' }}>
+                      {profitRate === null ? '' : `${profitRate}%`}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="border-2 border-gray-700 rounded overflow-hidden mt-2">
+              <p className="px-2 py-1 font-bold bg-gray-800 text-white" style={{ fontSize: '10pt' }}>
+                期首（3月）からの累計　─　{periodMonthsUpTo(month).length}ヶ月目
+              </p>
+              <table className="w-full border-collapse" style={{ fontSize: '11pt' }}>
+                <tbody>
+                  <tr>
+                    <td className="border border-gray-400 px-2 py-2 font-bold">累計目標</td>
+                    <td className="border border-gray-400 px-2 py-2 text-right">{yen(cumGoal)}</td>
+                  </tr>
+                  <tr>
+                    <td className="border border-gray-400 px-2 py-2 font-bold">累計実績</td>
+                    <td className="border border-gray-400 px-2 py-2 text-right font-bold" style={{ fontSize: '14pt' }}>
+                      {yen(cumActual)}
+                    </td>
+                  </tr>
+                  <tr className="bg-gray-100">
+                    <td className="border border-gray-400 px-2 py-2 font-bold">対 累計目標</td>
+                    <td className={`border border-gray-400 px-2 py-2 text-center font-bold ${rateColor(cumRate)}`} style={{ fontSize: '15pt' }}>
+                      {cumRate === null ? '' : `${cumRate}%`}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {/* 今期1,000万円に対する進捗バー */}
+            <div className="mt-3 border border-gray-400 rounded p-2.5">
+              <div className="flex items-end justify-between mb-1.5">
+                <span className="font-bold" style={{ fontSize: '10.5pt' }}>今期 1,000万円に対する進捗</span>
+                <span className="font-bold text-amber-700" style={{ fontSize: '20pt', lineHeight: 1 }}>{yearRate}%</span>
+              </div>
+              <div className="h-5 rounded-full bg-gray-100 overflow-hidden border border-gray-400">
+                <div className="h-full bg-amber-500" style={{ width: `${Math.min(100, Math.max(0, yearRate))}%` }} />
+              </div>
+              <div className="flex justify-between text-gray-500 mt-1" style={{ fontSize: '8.5pt' }}>
+                <span>3月</span>
+                <span>{yen(cumActual)} ／ {yen(PERIOD_PROFIT_GOAL)}</span>
+                <span>2月</span>
+              </div>
+            </div>
+
+            {/* 月別の利益目標 */}
+            <div className="mt-3">
+              <p className="font-bold mb-1" style={{ fontSize: '9.5pt' }}>月別の利益目標（1,000万円を12ヶ月で均等割り／端数は12月）</p>
+              <table className="w-full border-collapse" style={{ fontSize: '8.5pt' }}>
+                <tbody>
+                  {[0, 1].map(half => (
+                    <Fragment key={half}>
+                      <tr className="bg-gray-100">
+                        {PERIOD_MONTH_NUMBERS.slice(half * 6, half * 6 + 6).map(n => (
+                          <th key={n} className="border border-gray-400 px-1 py-1">{n}月</th>
+                        ))}
+                      </tr>
+                      <tr>
+                        {PERIOD_MONTH_NUMBERS.slice(half * 6, half * 6 + 6).map(n => (
+                          <td
+                            key={n}
+                            className={`border border-gray-400 px-1 py-1 text-right ${n === 12 ? 'font-bold bg-amber-50' : ''}`}
+                          >
+                            {yen(profitGoalOfMonthNumber(n))}
+                          </td>
+                        ))}
+                      </tr>
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 pt-1.5 border-t border-gray-300 text-center text-gray-500" style={{ fontSize: '8.5pt' }}>
+          売上は各営業のシートから集計／利益は店として入力　─　数字は「責める材料」ではなく「次の一手を決める材料」です
+        </div>
       </div>
     </div>
   );
