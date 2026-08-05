@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import {
   ArrowLeft, Printer, Plus, Trash2, Save, History, FileText, Copy,
 } from 'lucide-react';
@@ -82,16 +82,24 @@ const NEXT_FIELDS = [
 ];
 
 // 市川店の営業メンバー（発表順）
-const STAFF_OPTIONS = ['中村', '西野', '山口'];
+const STAFF_OPTIONS = ['奈菜', '西野', '山口'];
 
-// 実績の固定項目
-const RESULT_ITEMS = [
-  { key: 'rental', label: 'レンタル', unit: '件' },
-  { key: 'goods', label: '用品', unit: '件' },
-  { key: 'renovation', label: '住宅改修', unit: '件' },
-  { key: 'handrail', label: '手すり', unit: '本' },
+// 金額で追う項目（会社の実績表と同じ3本立て・税抜）
+const MONEY_ITEMS = [
+  { key: 'goodsYen', label: '用品' },
+  { key: 'rentalYen', label: 'レンタル' },
+  { key: 'renovationYen', label: '住宅改修' },
+];
+
+// 件数で追う項目（金額の裏づけになる行動量）
+const COUNT_ITEMS = [
+  { key: 'rentalNew', label: 'レンタル新規', unit: '件' },
+  { key: 'completed', label: '完工', unit: '件' },
   { key: 'surveyNormal', label: '現調（通常）', unit: '件' },
   { key: 'surveySales', label: '現調（営業）', unit: '件' },
+  { key: 'surveyOrder', label: '現調受注', unit: '件' },
+  { key: 'over1m', label: '100万越え', unit: '件' },
+  { key: 'handrail', label: '手すり', unit: '本' },
 ];
 
 // 補聴器は「測定 → 販売」の流れで追うため、実績表とは別枠で扱う
@@ -99,7 +107,31 @@ const HEARING_ITEMS = [
   { key: 'hearingMeasure', label: '測定数', unit: '件' },
   { key: 'hearingSale', label: '販売数', unit: '台' },
 ];
-const ALL_RESULT_KEYS = [...RESULT_ITEMS, ...HEARING_ITEMS];
+const ALL_RESULT_KEYS = [...MONEY_ITEMS, ...COUNT_ITEMS, ...HEARING_ITEMS];
+
+// 50期の月次目標（税抜・円）。期中は毎月同じなので、担当営業を選ぶと自動で入る
+const PERIOD_LABEL = '50期';
+const MONTHLY_GOALS = {
+  山口: { goodsYen: 300000, rentalYen: 120000, renovationYen: 500000 },
+  奈菜: { goodsYen: 300000, rentalYen: 120000, renovationYen: 500000 },
+  西野: { goodsYen: 300000, rentalYen: 120000, renovationYen: 500000 },
+};
+// 店としての目標。個人目標の合計より大きいので、差額が分かるように別で持つ
+const STORE_GOALS = { goodsYen: 1000000, rentalYen: 400000, renovationYen: 1750000 };
+
+function yen(v) {
+  const n = Number(v);
+  if (v === '' || v == null || !Number.isFinite(n)) return '';
+  return n.toLocaleString('ja-JP');
+}
+
+// 目標に対する残り（マイナス＝未達）
+function remaining(goal, actual) {
+  const g = Number(goal), a = Number(actual);
+  if (goal === '' || goal == null || actual === '' || actual == null) return null;
+  if (!Number.isFinite(g) || !Number.isFinite(a)) return null;
+  return a - g;
+}
 
 // アクション数（日々の営業活動のカウント）
 const ACTION_DAYS = ['月', '火', '水', '木', '金', '土'];
@@ -123,13 +155,27 @@ function createEmptyResults() {
   return results;
 }
 
-// 旧形式（現調が1種類だった頃）の記録を読み替える
+// 旧形式の記録を読み替える（現調が1種類だった頃／レンタル等が件数だった頃）
 function migrateResults(results) {
   const merged = { ...createEmptyResults(), ...(results || {}) };
   if (results?.survey && !results?.surveyNormal) {
     merged.surveyNormal = results.survey;
   }
   return merged;
+}
+
+// 担当営業の50期目標を、まだ空欄の項目にだけ入れる（入力済みの値は上書きしない）
+function applyPeriodGoals(results, staffName, { force = false } = {}) {
+  const goals = MONTHLY_GOALS[staffName];
+  if (!goals) return results;
+  const next = { ...results };
+  MONEY_ITEMS.forEach(item => {
+    const cur = next[item.key] || { goal: '', actual: '' };
+    if (force || cur.goal === '' || cur.goal == null) {
+      next[item.key] = { ...cur, goal: String(goals[item.key]) };
+    }
+  });
+  return next;
 }
 
 function createEmptyActions() {
@@ -398,6 +444,18 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
       ...prev,
       results: { ...prev.results, [key]: { ...prev.results[key], [field]: value } },
     }));
+  // 担当営業を選んだら、空欄の金額目標に50期の数字を入れる
+  const selectStaff = (name) =>
+    setMeeting(prev => ({
+      ...prev,
+      staffName: name,
+      results: applyPeriodGoals(prev.results, name),
+    }));
+  const resetPeriodGoals = () =>
+    setMeeting(prev => ({
+      ...prev,
+      results: applyPeriodGoals(prev.results, prev.staffName, { force: true }),
+    }));
   const updateAction = (weekIndex, dayIndex, value) =>
     setMeeting(prev => ({
       ...prev,
@@ -511,7 +569,7 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
               {STAFF_OPTIONS.map(name => (
                 <button
                   key={name}
-                  onClick={() => update('staffName', name)}
+                  onClick={() => selectStaff(name)}
                   className={`py-3 rounded-lg font-bold text-base border-2 active:opacity-70 ${
                     meeting.staffName === name
                       ? 'bg-gray-900 text-white border-gray-900'
@@ -590,35 +648,30 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
         </SectionCard>
 
         {/* 2. 実績 */}
-        <SectionCard number="2" title="実績" subtitle="レンタル・用品・住宅改修・手すり・現調（通常／営業）・補聴器">
+        <SectionCard number="2" title="実績" subtitle="金額（用品・レンタル・住宅改修）と、その裏づけになる件数">
           <div className="space-y-2">
-            <div className="grid grid-cols-[1fr_70px_70px_70px_60px] gap-2 text-xs font-semibold text-gray-600 px-1">
-              <span>項目</span>
-              <span className="text-center">先月実績</span>
+            {/* 金額：会社の実績表と同じ 目標 / 実績 / あと / 達成率 */}
+            <div className="grid grid-cols-[1fr_104px_104px_84px_52px] gap-2 text-xs font-semibold text-gray-600 px-1">
+              <span>金額（税抜）</span>
               <span className="text-center">目標</span>
               <span className="text-center">実績</span>
+              <span className="text-center">あと</span>
               <span className="text-center">達成率</span>
             </div>
-            {RESULT_ITEMS.map(item => {
+            {MONEY_ITEMS.map(item => {
               const r = meeting.results[item.key] || { goal: '', actual: '' };
               const rate = achievementRate(r.goal, r.actual);
-              const prevActual = prevRecord?.results?.[item.key]?.actual;
+              const rest = remaining(r.goal, r.actual);
               return (
-                <div key={item.key} className="grid grid-cols-[1fr_70px_70px_70px_60px] gap-2 items-center">
-                  <span className="font-bold text-sm text-gray-800 pl-1">
-                    {item.label}
-                    <span className="text-xs text-gray-400 font-normal ml-1">({item.unit})</span>
-                  </span>
-                  <span className="text-center text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg py-2">
-                    {prevActual !== undefined && prevActual !== '' ? prevActual : '─'}
-                  </span>
+                <div key={item.key} className="grid grid-cols-[1fr_104px_104px_84px_52px] gap-2 items-center">
+                  <span className="font-bold text-sm text-gray-800 pl-1">{item.label}</span>
                   <input
                     type="number"
                     inputMode="numeric"
                     value={r.goal}
                     onChange={e => updateResult(item.key, 'goal', e.target.value)}
                     placeholder="0"
-                    className="border rounded-lg px-2 py-2 text-base text-center"
+                    className="border rounded-lg px-2 py-2 text-sm text-right bg-gray-50"
                   />
                   <input
                     type="number"
@@ -626,16 +679,68 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
                     value={r.actual}
                     onChange={e => updateResult(item.key, 'actual', e.target.value)}
                     placeholder="0"
-                    className="border rounded-lg px-2 py-2 text-base text-center"
+                    className="border rounded-lg px-2 py-2 text-sm text-right font-bold"
                   />
+                  <span className={`text-right text-sm pr-1 ${rest === null ? 'text-gray-400' : rest < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                    {rest === null ? '─' : `${rest > 0 ? '+' : ''}${yen(rest)}`}
+                  </span>
                   <span className={`text-center text-sm font-bold ${rateColor(rate)}`}>
                     {rate === null ? '─' : `${rate}%`}
                   </span>
                 </div>
               );
             })}
+
+            {MONTHLY_GOALS[meeting.staffName] && (
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <p className="text-xs text-gray-500">
+                  目標は{PERIOD_LABEL}の固定値です（店目標：用品{yen(STORE_GOALS.goodsYen)}／レンタル{yen(STORE_GOALS.rentalYen)}／住改{yen(STORE_GOALS.renovationYen)}）
+                </p>
+                <button
+                  onClick={resetPeriodGoals}
+                  className="shrink-0 text-xs font-bold text-gray-600 border border-gray-300 rounded-lg px-2.5 py-1.5 active:opacity-60"
+                >
+                  目標を入れ直す
+                </button>
+              </div>
+            )}
+
+            {/* 件数：先月と今月を並べて動きを見る */}
+            <div className="pt-3">
+              <div className="grid grid-cols-[1fr_66px_66px] gap-2 text-xs font-semibold text-gray-600 px-1 pb-1">
+                <span>件数</span>
+                <span className="text-center">先月</span>
+                <span className="text-center">今月</span>
+              </div>
+              <div className="space-y-2">
+                {COUNT_ITEMS.map(item => {
+                  const r = meeting.results[item.key] || { goal: '', actual: '' };
+                  const prevActual = prevRecord?.results?.[item.key]?.actual;
+                  return (
+                    <div key={item.key} className="grid grid-cols-[1fr_66px_66px] gap-2 items-center">
+                      <span className="font-bold text-sm text-gray-800 pl-1">
+                        {item.label}
+                        <span className="text-xs text-gray-400 font-normal ml-1">({item.unit})</span>
+                      </span>
+                      <span className="text-center text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg py-2">
+                        {prevActual !== undefined && prevActual !== '' ? prevActual : '─'}
+                      </span>
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        value={r.actual}
+                        onChange={e => updateResult(item.key, 'actual', e.target.value)}
+                        placeholder="0"
+                        className="border rounded-lg px-2 py-2 text-base text-center"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
             <p className="text-xs text-gray-400 pt-1">
-              ※先月実績は、同じ氏名で保存された前月のシートから自動表示されます
+              ※先月の数字は、同じ氏名で保存された前月のシートから自動表示されます
             </p>
 
             {/* 補聴器：測定 → 販売 の流れで追う */}
@@ -1131,11 +1236,11 @@ function MeetingPreviewScreen({ meeting, onBack }) {
             <table className="w-full border-collapse" style={{ fontSize: '9pt' }}>
               <thead>
                 <tr className="bg-gray-100">
-                  <th className="border border-gray-400 px-1 py-1 w-6"></th>
-                  <th className="border border-gray-400 px-1.5 py-1 text-left">居宅介護支援事業所名 / 担当ケアマネ</th>
-                  <th className="border border-gray-400 px-1 py-1 w-14">目標<br />訪問数</th>
-                  <th className="border border-gray-400 px-1 py-1 w-14">実際の<br />訪問数</th>
-                  <th className="border border-gray-400 px-1 py-1 w-14">達成率</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-6"></th>
+                  <th className="border border-gray-400 px-1.5 py-0.5 text-left">居宅介護支援事業所名 / 担当ケアマネ</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-14">目標<br />訪問数</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-14">実際の<br />訪問数</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-14">達成率</th>
                 </tr>
               </thead>
               <tbody>
@@ -1143,16 +1248,16 @@ function MeetingPreviewScreen({ meeting, onBack }) {
                   const rate = achievementRate(t.goalVisits, t.actualVisits);
                   return (
                     <tr key={i}>
-                      <td className="border border-gray-400 px-1 py-1 text-center font-bold">{i + 1}</td>
-                      <td className="border border-gray-400 px-1.5 py-1">
+                      <td className="border border-gray-400 px-1 py-0.5 text-center font-bold">{i + 1}</td>
+                      <td className="border border-gray-400 px-1.5 py-0.5">
                         <div>{t.name}</div>
                         {t.careManager && (
                           <div className="text-gray-600" style={{ fontSize: '8pt' }}>CM：{t.careManager}</div>
                         )}
                       </td>
-                      <td className="border border-gray-400 px-1 py-1 text-center">{t.goalVisits !== '' ? t.goalVisits : ''}</td>
-                      <td className="border border-gray-400 px-1 py-1 text-center">{t.actualVisits !== '' ? t.actualVisits : ''}</td>
-                      <td className={`border border-gray-400 px-1 py-1 text-center font-bold ${rateColor(rate)}`}>
+                      <td className="border border-gray-400 px-1 py-0.5 text-center">{t.goalVisits !== '' ? t.goalVisits : ''}</td>
+                      <td className="border border-gray-400 px-1 py-0.5 text-center">{t.actualVisits !== '' ? t.actualVisits : ''}</td>
+                      <td className={`border border-gray-400 px-1 py-0.5 text-center font-bold ${rateColor(rate)}`}>
                         {rate === null ? '' : `${rate}%`}
                       </td>
                     </tr>
@@ -1161,35 +1266,82 @@ function MeetingPreviewScreen({ meeting, onBack }) {
               </tbody>
             </table>
 
-            <PrintSectionTitle number="2" title="実績" />
+            <PrintSectionTitle number="2" title="実績（税抜）" />
             <table className="w-full border-collapse" style={{ fontSize: '9pt' }}>
               <thead>
                 <tr className="bg-gray-100">
-                  <th className="border border-gray-400 px-1.5 py-0.5 text-left">項目</th>
-                  <th className="border border-gray-400 px-1 py-0.5 w-16">先月実績</th>
-                  <th className="border border-gray-400 px-1 py-0.5 w-14">目標</th>
-                  <th className="border border-gray-400 px-1 py-0.5 w-14">実績</th>
-                  <th className="border border-gray-400 px-1 py-0.5 w-14">達成率</th>
+                  <th className="border border-gray-400 px-1.5 py-0.5 text-left">金額</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-16">先月</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-16">目標</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-16">実績</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-16">あと</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-12">達成率</th>
                 </tr>
               </thead>
               <tbody>
-                {RESULT_ITEMS.map(item => {
+                {MONEY_ITEMS.map(item => {
                   const r = meeting.results[item.key] || { goal: '', actual: '' };
                   const rate = achievementRate(r.goal, r.actual);
-                  const prevActual = prevRecord?.results?.[item.key]?.actual;
+                  const rest = remaining(r.goal, r.actual);
                   return (
                     <tr key={item.key}>
-                      <td className="border border-gray-400 px-1.5 py-0.5 font-bold">
-                        {item.label}<span className="font-normal text-gray-500">（{item.unit}）</span>
+                      <td className="border border-gray-400 px-1.5 py-0.5 font-bold">{item.label}</td>
+                      <td className="border border-gray-400 px-1 py-0.5 text-right text-gray-500">
+                        {yen(prevRecord?.results?.[item.key]?.actual)}
                       </td>
-                      <td className="border border-gray-400 px-1 py-0.5 text-center text-gray-600">
-                        {prevActual !== undefined && prevActual !== '' ? prevActual : ''}
+                      <td className="border border-gray-400 px-1 py-0.5 text-right text-gray-600">{yen(r.goal)}</td>
+                      <td className="border border-gray-400 px-1 py-0.5 text-right font-bold">{yen(r.actual)}</td>
+                      <td className={`border border-gray-400 px-1 py-0.5 text-right ${rest === null ? '' : rest < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {rest === null ? '' : `${rest > 0 ? '+' : ''}${yen(rest)}`}
                       </td>
-                      <td className="border border-gray-400 px-1 py-0.5 text-center">{r.goal !== '' ? r.goal : ''}</td>
-                      <td className="border border-gray-400 px-1 py-0.5 text-center font-bold">{r.actual !== '' ? r.actual : ''}</td>
                       <td className={`border border-gray-400 px-1 py-0.5 text-center font-bold ${rateColor(rate)}`}>
                         {rate === null ? '' : `${rate}%`}
                       </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+
+            {/* 件数：先月と今月を横に並べ、2列に折り返して縦を詰める */}
+            <table className="w-full border-collapse mt-1" style={{ fontSize: '8pt' }}>
+              <thead>
+                <tr className="bg-gray-100">
+                  <th className="border border-gray-400 px-1.5 py-0.5 text-left">件数</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-9">先月</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-9">今月</th>
+                  <th className="border border-gray-400 px-1.5 py-0.5 text-left">件数</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-9">先月</th>
+                  <th className="border border-gray-400 px-1 py-0.5 w-9">今月</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from({ length: Math.ceil(COUNT_ITEMS.length / 2) }, (_, row) => {
+                  const pair = [COUNT_ITEMS[row * 2], COUNT_ITEMS[row * 2 + 1]];
+                  return (
+                    <tr key={row}>
+                      {pair.map((item, i) => {
+                        if (!item) {
+                          return (
+                            <td key={`empty-${i}`} className="border border-gray-400 px-1 py-0.5" colSpan={3} />
+                          );
+                        }
+                        const r = meeting.results[item.key] || { goal: '', actual: '' };
+                        const prevActual = prevRecord?.results?.[item.key]?.actual;
+                        return (
+                          <Fragment key={item.key}>
+                            <td className="border border-gray-400 px-1.5 py-0.5 font-bold">
+                              {item.label}<span className="font-normal text-gray-500">（{item.unit}）</span>
+                            </td>
+                            <td className="border border-gray-400 px-1 py-0.5 text-center text-gray-600">
+                              {prevActual !== undefined && prevActual !== '' ? prevActual : ''}
+                            </td>
+                            <td className="border border-gray-400 px-1 py-0.5 text-center font-bold">
+                              {r.actual !== '' ? r.actual : ''}
+                            </td>
+                          </Fragment>
+                        );
+                      })}
                     </tr>
                   );
                 })}
@@ -1235,7 +1387,7 @@ function MeetingPreviewScreen({ meeting, onBack }) {
                     <td className="border-2 border-indigo-500 px-1.5 py-0.5 font-bold" colSpan={3}>
                       {meeting.month ? meeting.month.split('-')[0] : ''}年の販売累計
                     </td>
-                    <td className="border-2 border-indigo-500 px-1 py-0.5 text-center font-bold" colSpan={2} style={{ fontSize: '12pt' }}>
+                    <td className="border-2 border-indigo-500 px-1 py-0.5 text-center font-bold" colSpan={2} style={{ fontSize: '10.5pt' }}>
                       {yearHearingSales} 台
                     </td>
                   </tr>
@@ -1251,7 +1403,7 @@ function MeetingPreviewScreen({ meeting, onBack }) {
               label={VOICE_FIELD.label}
               hint={VOICE_FIELD.hint}
               value={meeting.voices}
-              minHeight="32mm"
+              minHeight="25mm"
               sky
             />
 
@@ -1378,7 +1530,7 @@ function PrintActionGrid({ weeks }) {
   const grand = actionGrandTotal(weeks);
   const cell = 'border border-gray-400 text-center';
   return (
-    <table className="w-full border-collapse" style={{ fontSize: '8.5pt' }}>
+    <table className="w-full border-collapse" style={{ fontSize: '8pt' }}>
       <thead>
         <tr className="bg-gray-100">
           <th className={`${cell} py-0.5 w-8`}></th>
