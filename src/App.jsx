@@ -84,28 +84,31 @@ const NEXT_FIELDS = [
 // 市川店の営業メンバー（発表順）
 const STAFF_OPTIONS = ['奈菜', '西野', '山口'];
 
-// 金額で追う項目（会社の実績表と同じ3本立て・税抜）
+// 金額で追う項目（50期の売上表と同じ3本立て・税抜）
+// レンタルは総額ではなく「新規額」を追う（会社の営業別シートに合わせる）
 const MONEY_ITEMS = [
   { key: 'goodsYen', label: '用品' },
-  { key: 'rentalYen', label: 'レンタル' },
+  { key: 'rentalYen', label: 'レンタル新規額' },
   { key: 'renovationYen', label: '住宅改修' },
 ];
 
-// 件数で追う項目（金額の裏づけになる行動量）
+// 件数で追う項目。focus:true は会社の内訳表で★が付いている重点項目
 const COUNT_ITEMS = [
-  { key: 'rentalNew', label: 'レンタル新規', unit: '件' },
-  { key: 'completed', label: '完工', unit: '件' },
-  { key: 'surveyNormal', label: '現調（通常）', unit: '件' },
-  { key: 'surveySales', label: '現調（営業）', unit: '件' },
-  { key: 'surveyOrder', label: '現調受注', unit: '件' },
-  { key: 'over1m', label: '100万越え', unit: '件' },
-  { key: 'handrail', label: '手すり', unit: '本' },
+  { key: 'newContracts', label: '新規契約者数', short: '新規契約', unit: '件', focus: true },
+  { key: 'handrailRental', label: '手すり（レンタル）', short: '手すりﾚﾝﾀﾙ', unit: '本', focus: true },
+  { key: 'rentalCareMgr', label: 'レンタル受注ケアマネ数', short: 'ﾚﾝﾀﾙ受注CM', unit: '人', focus: true },
+  { key: 'homeVisits', label: '居宅訪問数', short: '居宅訪問', unit: '件', focus: true },
+  { key: 'surveyNormal', label: '現調（通常）', short: '現調(通常)', unit: '件' },
+  { key: 'surveySales', label: '現調（営業）', short: '現調(営業)', unit: '件' },
+  { key: 'surveyOrderHome', label: '現調受注居宅数', short: '現調受注居宅', unit: '件' },
+  { key: 'completed', label: '完工件数', short: '完工', unit: '件' },
+  { key: 'over1m', label: '100超 完工', short: '100超完工', unit: '件', focus: true },
 ];
 
 // 補聴器は「測定 → 販売」の流れで追うため、実績表とは別枠で扱う
 const HEARING_ITEMS = [
   { key: 'hearingMeasure', label: '測定数', unit: '件' },
-  { key: 'hearingSale', label: '販売数', unit: '台' },
+  { key: 'hearingSale', label: '販売数', unit: '台', focus: true },
 ];
 const ALL_RESULT_KEYS = [...MONEY_ITEMS, ...COUNT_ITEMS, ...HEARING_ITEMS];
 
@@ -160,6 +163,15 @@ function migrateResults(results) {
   const merged = { ...createEmptyResults(), ...(results || {}) };
   if (results?.survey && !results?.surveyNormal) {
     merged.surveyNormal = results.survey;
+  }
+  if (results?.handrail && !results?.handrailRental) {
+    merged.handrailRental = results.handrail;
+  }
+  if (results?.surveyOrder && !results?.surveyOrderHome) {
+    merged.surveyOrderHome = results.surveyOrder;
+  }
+  if (results?.rentalNew && !results?.newContracts) {
+    merged.newContracts = results.rentalNew;
   }
   return merged;
 }
@@ -648,7 +660,7 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
         </SectionCard>
 
         {/* 2. 実績 */}
-        <SectionCard number="2" title="実績" subtitle="金額（用品・レンタル・住宅改修）と、その裏づけになる件数">
+        <SectionCard number="2" title="実績" subtitle="金額（用品・レンタル新規額・住宅改修）と、その裏づけになる件数">
           <div className="space-y-2">
             {/* 金額：会社の実績表と同じ 目標 / 実績 / あと / 達成率 */}
             <div className="grid grid-cols-[1fr_104px_104px_84px_52px] gap-2 text-xs font-semibold text-gray-600 px-1">
@@ -708,7 +720,7 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
             {/* 件数：先月と今月を並べて動きを見る */}
             <div className="pt-3">
               <div className="grid grid-cols-[1fr_66px_66px] gap-2 text-xs font-semibold text-gray-600 px-1 pb-1">
-                <span>件数</span>
+                <span>件数　<span className="font-normal text-gray-400">★＝会社の重点項目</span></span>
                 <span className="text-center">先月</span>
                 <span className="text-center">今月</span>
               </div>
@@ -719,6 +731,7 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
                   return (
                     <div key={item.key} className="grid grid-cols-[1fr_66px_66px] gap-2 items-center">
                       <span className="font-bold text-sm text-gray-800 pl-1">
+                        {item.focus && <span className="text-amber-500 mr-0.5">★</span>}
                         {item.label}
                         <span className="text-xs text-gray-400 font-normal ml-1">({item.unit})</span>
                       </span>
@@ -754,6 +767,7 @@ function MeetingEditorScreen({ meeting, setMeeting, currentId, onCurrentIdChange
                 return (
                   <div key={item.key} className="grid grid-cols-[1fr_70px_70px_70px_60px] gap-2 items-center">
                     <span className="font-bold text-sm text-gray-800 pl-1">
+                      {item.focus && <span className="text-amber-500 mr-0.5">★</span>}
                       {item.label}
                       <span className="text-xs text-gray-400 font-normal ml-1">({item.unit})</span>
                     </span>
@@ -1304,7 +1318,7 @@ function MeetingPreviewScreen({ meeting, onBack }) {
             </table>
 
             {/* 件数：先月と今月を横に並べ、2列に折り返して縦を詰める */}
-            <table className="w-full border-collapse mt-1" style={{ fontSize: '8pt' }}>
+            <table className="w-full border-collapse mt-1" style={{ fontSize: '7.5pt' }}>
               <thead>
                 <tr className="bg-gray-100">
                   <th className="border border-gray-400 px-1.5 py-0.5 text-left">件数</th>
@@ -1331,7 +1345,9 @@ function MeetingPreviewScreen({ meeting, onBack }) {
                         return (
                           <Fragment key={item.key}>
                             <td className="border border-gray-400 px-1.5 py-0.5 font-bold">
-                              {item.label}<span className="font-normal text-gray-500">（{item.unit}）</span>
+                              {item.focus && <span className="text-amber-600">★</span>}
+                              {item.short || item.label}
+                              <span className="font-normal text-gray-500">（{item.unit}）</span>
                             </td>
                             <td className="border border-gray-400 px-1 py-0.5 text-center text-gray-600">
                               {prevActual !== undefined && prevActual !== '' ? prevActual : ''}
@@ -1362,6 +1378,7 @@ function MeetingPreviewScreen({ meeting, onBack }) {
                     return (
                       <tr key={item.key}>
                         <td className="border border-indigo-200 px-1.5 py-0.5 font-bold">
+                          {item.focus && <span className="text-amber-600">★</span>}
                           {item.label}<span className="font-normal text-gray-500">（{item.unit}）</span>
                         </td>
                         <td className="border border-indigo-200 px-1 py-0.5 text-center text-gray-600 w-16">
